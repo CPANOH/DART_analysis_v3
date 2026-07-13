@@ -176,17 +176,21 @@ const key = () => $("#apikey").value.trim();
 $("#apikey").value = localStorage.getItem("dartKey") || "";
 $("#apikey").addEventListener("change", e => localStorage.setItem("dartKey", e.target.value.trim()));
 
-// 서버에 키가 설정돼 있으면 입력을 선택사항으로 안내
+// 서버에 키가 설정돼 있으면 입력칸을 숨기고 "설정됨"으로 표시
 let hasServerKey = false;
 fetch("/api/config").then(r=>r.json()).then(j=>{
   hasServerKey = !!j.has_server_key;
   if(hasServerKey){
-    $("#keyNote").textContent = "· 서버에 설정됨(비워두면 서버 키 사용)";
-    $("#apikey").placeholder = "비워두면 서버 키 사용";
+    $("#apikey").style.display = "none";
+    $("#keyNote").textContent = "";
+    const ind = document.createElement("div");
+    ind.textContent = "✓ 설정됨 (입력 불필요)";
+    ind.style.cssText = "padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#eef7ef;color:var(--ok);font-weight:600;font-size:13px;";
+    $("#apikey").parentElement.appendChild(ind);
   }
 }).catch(()=>{});
 // 클라이언트 키가 있으면 그것을, 없으면 서버 키(빈 문자열 전송 시 서버가 대체)를 사용
-const hasKey = () => key() || hasServerKey;
+const hasKey = () => !!(key() || hasServerKey);
 
 // 1차: 산업군 로드
 async function loadIndustries(){

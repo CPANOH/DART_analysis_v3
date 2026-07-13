@@ -17,6 +17,9 @@ corpCode.xml
 # Vercel
 .vercel
 
+# 로컬 에디터/도구 설정
+.claude/
+
 # OS / 에디터
 .DS_Store
 Thumbs.db
