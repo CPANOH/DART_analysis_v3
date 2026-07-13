@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>재무분석기</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --card: #fff; --line: #e2e6ec; --ink: #1f2733;
+    --muted: #6b7684; --brand: #1f4e78; --brand2: #2f6fb0; --ok: #1a7f45;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Malgun Gothic", "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--ink); font-size: 14px;
+  }
+  header {
+    background: var(--brand); color: #fff; padding: 16px 24px;
+  }
+  header h1 { margin: 0; font-size: 19px; }
+  header p { margin: 4px 0 0; font-size: 12px; opacity: .85; }
+  .wrap { max-width: 1080px; margin: 20px auto; padding: 0 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 14px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px;
+  }
+  .step {
+    background: var(--brand2); color: #fff; width: 22px; height: 22px;
+    border-radius: 50%; display: inline-flex; align-items: center;
+    justify-content: center; font-size: 12px; font-weight: bold;
+  }
+  .settings { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input, select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 6px; font-size: 13px; background: #fff;
+  }
+  .list {
+    max-height: 240px; overflow-y: auto; border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px;
+  }
+  .list.small { max-height: 200px; }
+  .opt {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+    border-radius: 5px; cursor: pointer;
+  }
+  .opt:hover { background: #eef3f9; }
+  .opt input { width: auto; }
+  .opt .tag { margin-left: auto; font-size: 11px; color: var(--muted); }
+  .opt.disabled { opacity: .45; }
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .search { flex: 1; min-width: 160px; }
+  button {
+    padding: 8px 14px; border: none; border-radius: 6px; cursor: pointer;
+    font-size: 13px; font-weight: 600; background: #e7edf5; color: var(--brand);
+  }
+  button.primary { background: var(--brand); color: #fff; }
+  button.go { background: var(--ok); color: #fff; font-size: 15px; padding: 12px 20px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .count { font-size: 12px; color: var(--brand2); font-weight: 600; }
+  #status {
+    padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; display: none;
+    font-size: 13px;
+  }
+  #status.err { background: #fdecec; color: #b3261e; display: block; }
+  #status.info { background: #e8f1fb; color: var(--brand); display: block; }
+  .spin { display:none; }
+  .loading .spin { display:inline; }
+  a.help { color:#cfe3ff; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>재무분석기</h1>
+  <p>산업군 → 회사명 → 계정과목을 선택하고 엑셀로 다운로드하세요 · 데이터 출처: 네이버 증권 / DART</p>
+</header>
+
+<div class="wrap">
+  <div id="status"></div>
+
+  <!-- 설정 -->
+  <div class="card">
+    <h2>설정</h2>
+    <div class="settings">
+      <div>
+        <label>DART OpenAPI 인증키
+          <a class="help" href="https://opendart.fss.or.kr/" target="_blank">키 발급 →</a>
+          <span id="keyNote" class="muted"></span>
+        </label>
+        <input id="apikey" type="password" placeholder="DART에서 발급받은 40자리 키">
+      </div>
+      <div>
+        <label>사업연도</label>
+        <select id="year"></select>
+      </div>
+      <div>
+        <label>보고서</label>
+        <select id="reprt">
+          <option value="11011">사업보고서(연간)</option>
+          <option value="11014">3분기보고서</option>
+          <option value="11012">반기보고서</option>
+          <option value="11013">1분기보고서</option>
+        </select>
+      </div>
+      <div>
+        <label>재무제표 구분</label>
+        <select id="fs">
+          <option value="CFS">연결재무제표</option>
+          <option value="OFS">별도재무제표</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1차: 산업군 -->
+  <div class="card">
+    <h2><span class="step">1</span> 산업군 <span class="muted">(네이버 증권)</span></h2>
+    <select id="industry"><option value="">— 산업군을 불러오는 중… —</option></select>
+  </div>
+
+  <!-- 2차: 회사명 -->
+  <div class="card">
+    <h2><span class="step">2</span> 회사명 <span id="companyCount" class="count"></span></h2>
+    <div class="toolbar">
+      <input class="search" id="companySearch" placeholder="회사명 검색…">
+      <button id="companyAll">전체선택</button>
+      <button id="companyNone">해제</button>
+      <button class="primary" id="loadAccounts">계정과목 불러오기 ▶</button>
+      <span class="spin muted" id="companySpin">불러오는 중…</span>
+    </div>
+    <div class="list" id="companyList"><div class="muted" style="padding:8px">먼저 산업군을 선택하세요.</div></div>
+  </div>
+
+  <!-- 3차: 계정과목 -->
+  <div class="card">
+    <h2><span class="step">3</span> 계정과목 <span id="accountCount" class="count"></span></h2>
+    <div class="toolbar">
+      <input class="search" id="accountSearch" placeholder="계정과목 검색…">
+      <button id="accountAll">전체선택</button>
+      <button id="accountNone">해제</button>
+    </div>
+    <div class="list small" id="accountList"><div class="muted" style="padding:8px">회사를 선택하고 "계정과목 불러오기"를 누르세요.</div></div>
+  </div>
+
+  <!-- 다운로드 -->
+  <div class="card" style="text-align:center">
+    <button class="go" id="download" disabled>📥 엑셀로 다운로드</button>
+    <div class="spin muted" id="dlSpin" style="margin-top:8px">엑셀 생성 중…</div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const statusBox = $("#status");
+let companies = [];   // 현재 업종의 회사들
+let accounts = [];    // 로드된 계정과목
+
+function showErr(msg){ statusBox.className="err"; statusBox.textContent="⚠ "+msg; }
+function showInfo(msg){ statusBox.className="info"; statusBox.textContent=msg; }
+function clearStatus(){ statusBox.className=""; statusBox.style.display="none"; }
+const key = () => $("#apikey").value.trim();
+
+// 연도 채우기 (최근 6개년)
+(function(){
+  const y = new Date().getFullYear();
+  const sel = $("#year");
+  for(let i=1;i<=6;i++){ const yr=y-i; sel.add(new Option(yr, yr)); }
+  sel.value = y-1;
+})();
+
+// 저장된 키 복원
+$("#apikey").value = localStorage.getItem("dartKey") || "";
+$("#apikey").addEventListener("change", e => localStorage.setItem("dartKey", e.target.value.trim()));
+
+// 서버에 키가 설정돼 있으면 입력을 선택사항으로 안내
+let hasServerKey = false;
+fetch("/api/config").then(r=>r.json()).then(j=>{
+  hasServerKey = !!j.has_server_key;
+  if(hasServerKey){
+    $("#keyNote").textContent = "· 서버에 설정됨(비워두면 서버 키 사용)";
+    $("#apikey").placeholder = "비워두면 서버 키 사용";
+  }
+}).catch(()=>{});
+// 클라이언트 키가 있으면 그것을, 없으면 서버 키(빈 문자열 전송 시 서버가 대체)를 사용
+const hasKey = () => key() || hasServerKey;
+
+// 1차: 산업군 로드
+async function loadIndustries(){
+  try{
+    const r = await fetch("/api/industries");
+    const j = await r.json();
+    if(!j.ok) return showErr(j.error);
+    const sel = $("#industry");
+    sel.innerHTML = '<option value="">— 산업군 선택 —</option>';
+    j.industries.forEach(it => sel.add(new Option(it.name, it.no)));
+  }catch(e){ showErr("산업군 로드 실패: "+e); }
+}
+
+// 2차: 회사 로드
+$("#industry").addEventListener("change", async e => {
+  const no = e.target.value;
+  companies = []; accounts = [];
+  renderAccounts(); updateDownload();
+  const box = $("#companyList");
+  if(!no){ box.innerHTML='<div class="muted" style="padding:8px">먼저 산업군을 선택하세요.</div>'; return; }
+  box.innerHTML='<div class="muted" style="padding:8px">불러오는 중…</div>';
+  clearStatus();
+  try{
+    const r = await fetch(`/api/companies?no=${no}&key=${encodeURIComponent(key())}`);
+    const j = await r.json();
+    if(!j.ok) return showErr(j.error);
+    companies = j.companies;
+    if(!hasKey()) showInfo("DART 키를 입력하면 상장 매칭·계정과목 조회가 가능합니다.");
+    renderCompanies();
+  }catch(e){ showErr("회사 로드 실패: "+e); }
+});
+
+function renderCompanies(){
+  const q = $("#companySearch").value.trim();
+  const box = $("#companyList");
+  const list = companies.filter(c => !q || c.name.includes(q));
+  box.innerHTML = "";
+  if(!list.length){ box.innerHTML='<div class="muted" style="padding:8px">종목이 없습니다.</div>'; return; }
+  list.forEach(c => {
+    const dis = !c.in_dart;
+    const row = document.createElement("label");
+    row.className = "opt" + (dis?" disabled":"");
+    row.innerHTML = `<input type="checkbox" value="${c.corp_code||''}" data-name="${c.name}" ${dis?"disabled":""}>
+      <span>${c.name}</span><span class="tag">${c.stock_code}${dis?" · DART없음":""}</span>`;
+    box.appendChild(row);
+  });
+  $("#companyCount").textContent = `${companies.filter(c=>c.in_dart).length}개 상장사`;
+}
+$("#companySearch").addEventListener("input", renderCompanies);
+$("#companyAll").onclick = () => { document.querySelectorAll('#companyList input:not(:disabled)').forEach(i=>i.checked=true); };
+$("#companyNone").onclick = () => { document.querySelectorAll('#companyList input').forEach(i=>i.checked=false); };
+
+function selectedCompanies(){
+  return [...document.querySelectorAll('#companyList input:checked')]
+    .map(i => ({corp_code:i.value, name:i.dataset.name}));
+}
+
+// 3차: 계정과목 로드
+$("#loadAccounts").onclick = async () => {
+  if(!hasKey()) return showErr("DART API 키를 먼저 입력하세요.");
+  const sel = selectedCompanies();
+  if(!sel.length) return showErr("회사를 1개 이상 선택하세요.");
+  clearStatus();
+  $("#companySpin").parentElement.classList.add("loading");
+  $("#loadAccounts").disabled = true;
+  try{
+    const codes = sel.map(c=>c.corp_code).join(",");
+    const p = new URLSearchParams({key:key(), corp_codes:codes, year:$("#year").value, reprt:$("#reprt").value, fs:$("#fs").value});
+    const r = await fetch("/api/accounts?"+p);
+    const j = await r.json();
+    if(!j.ok) return showErr(j.error);
+    accounts = j.accounts;
+    if(!accounts.length) showInfo("해당 조건의 재무제표 데이터가 없습니다. 연도/보고서/구분을 바꿔보세요.");
+    renderAccounts();
+  }catch(e){ showErr("계정과목 로드 실패: "+e); }
+  finally{
+    $("#companySpin").parentElement.classList.remove("loading");
+    $("#loadAccounts").disabled = false;
+  }
+};
+
+function renderAccounts(){
+  const q = $("#accountSearch").value.trim();
+  const box = $("#accountList");
+  const list = accounts.filter(a => !q || a.account_nm.includes(q));
+  box.innerHTML = "";
+  if(!accounts.length){ box.innerHTML='<div class="muted" style="padding:8px">회사를 선택하고 "계정과목 불러오기"를 누르세요.</div>'; updateDownload(); return; }
+  list.forEach(a => {
+    const row = document.createElement("label");
+    row.className = "opt";
+    row.innerHTML = `<input type="checkbox" value="${a.account_nm}"><span>${a.account_nm}</span><span class="tag">${a.sj_nm||''}</span>`;
+    box.appendChild(row);
+  });
+  box.querySelectorAll('input').forEach(i => i.addEventListener("change", updateDownload));
+  $("#accountCount").textContent = `${accounts.length}개 계정`;
+  updateDownload();
+}
+$("#accountSearch").addEventListener("input", renderAccounts);
+$("#accountAll").onclick = () => { document.querySelectorAll('#accountList input').forEach(i=>i.checked=true); updateDownload(); };
+$("#accountNone").onclick = () => { document.querySelectorAll('#accountList input').forEach(i=>i.checked=false); updateDownload(); };
+
+function selectedAccounts(){
+  return [...document.querySelectorAll('#accountList input:checked')].map(i=>i.value);
+}
+function updateDownload(){
+  $("#download").disabled = !(selectedCompanies().length && selectedAccounts().length);
+}
+document.addEventListener("change", e => { if(e.target.closest('#companyList')) updateDownload(); });
+
+// 다운로드
+$("#download").onclick = async () => {
+  const sel = selectedCompanies(), acc = selectedAccounts();
+  if(!sel.length || !acc.length) return;
+  clearStatus();
+  $("#dlSpin").parentElement.classList.add("loading");
+  $("#download").disabled = true;
+  try{
+    const body = {
+      key:key(), year:$("#year").value, reprt:$("#reprt").value, fs:$("#fs").value,
+      industry: $("#industry").selectedOptions[0]?.text || "",
+      companies: sel, accounts: acc
+    };
+    const r = await fetch("/api/export", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    if(!r.ok){ const j = await r.json().catch(()=>({error:"다운로드 실패"})); return showErr(j.error); }
+    const blob = await r.blob();
+    const cd = r.headers.get("Content-Disposition")||"";
+    const m = cd.match(/filename\*?=(?:UTF-8''|")?([^";]+)/);
+    const name = m ? decodeURIComponent(m[1]) : "재무분석.xlsx";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href=url; a.download=name; a.click();
+    URL.revokeObjectURL(url);
+    showInfo("✅ 다운로드 완료: "+name);
+  }catch(e){ showErr("다운로드 실패: "+e); }
+  finally{
+    $("#dlSpin").parentElement.classList.remove("loading");
+    updateDownload();
+  }
+};
+
+loadIndustries();
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# DART 캐시 / 다운로드 산출물
+corpCode.xml
+*.xlsx
+
+# 환경변수 / 시크릿 (절대 커밋 금지)
+.env
+.env.*
+*.key
+
+# Vercel
+.vercel
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
