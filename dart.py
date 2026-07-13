@@ -5,8 +5,11 @@
 """
 
 import io
+import re
 import json
+import time
 import zipfile
+import html as _html
 import requests
 import xml.etree.ElementTree as ET
 
@@ -99,4 +102,93 @@ def get_accounts(key, corp_code, year, reprt, fs_div):
         if nm and nm not in seen:
             seen.add(nm)
             out.append({"sj_nm": sj, "account_nm": nm})
+    return out
+
+
+# ============================================================
+# 플러스알파: 사업보고서 "내용" (계정과목 외)
+# ============================================================
+
+def _get_json(ep, params, retries=3):
+    """DART JSON 호출. status=101(연속호출 제한)이면 잠깐 쉬고 재시도."""
+    j = {}
+    for attempt in range(retries):
+        r = requests.get(f"{API}/{ep}", params=params, timeout=30)
+        try:
+            j = r.json()
+        except Exception:
+            return {"status": "900", "message": "응답 파싱 실패"}
+        if j.get("status") == "101" and attempt < retries - 1:
+            time.sleep(0.7)
+            continue
+        return j
+    return j
+
+
+def get_major_info(key, corp_code, year, reprt, endpoint):
+    """정기보고서 주요정보 단일 항목 조회 -> (list, status)."""
+    j = _get_json(endpoint + ".json", {
+        "crtfc_key": key, "corp_code": corp_code,
+        "bsns_year": year, "reprt_code": reprt,
+    })
+    st = j.get("status")
+    if st == "000":
+        return j.get("list", []), "000"
+    if st == "013":            # 조회된 데이터 없음
+        return [], "013"
+    return [], st or "900"
+
+
+def find_report_rcept(key, corp_code, year):
+    """해당 사업연도 '사업보고서'의 접수번호(rcept_no)를 찾는다. (사업보고서는 다음 해에 제출)"""
+    j = _get_json("list.json", {
+        "crtfc_key": key, "corp_code": corp_code,
+        "bgn_de": f"{year}0101", "end_de": f"{int(year) + 1}1231",
+        "pblntf_detail_ty": "A001",   # 사업보고서
+        "page_count": "100",
+    })
+    if j.get("status") != "000":
+        return None
+    cands = j.get("list", [])
+    for it in cands:                              # (YYYY.12) 정기 사업보고서 우선
+        if f"({year}.12)" in it.get("report_nm", ""):
+            return it.get("rcept_no")
+    return cands[0].get("rcept_no") if cands else None
+
+
+def _strip(s):
+    """XML/HTML 태그 제거 후 공백 정리."""
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = _html.unescape(s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+_doc_cache = {}   # (key, rcept_no) -> {대분류제목: 텍스트}
+
+
+def get_report_sections(key, rcept_no):
+    """사업보고서 본문에서 대분류(로마숫자) 섹션별 텍스트를 추출. {'I. 회사의 개요': '...'}"""
+    ck = (key, rcept_no)
+    if ck in _doc_cache:
+        return _doc_cache[ck]
+
+    r = requests.get(f"{API}/document.xml",
+                     params={"crtfc_key": key, "rcept_no": rcept_no}, timeout=90)
+    if r.content[:2] != b"PK":
+        _doc_cache[ck] = {}
+        return {}
+
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    main = max(zf.namelist(), key=lambda n: zf.getinfo(n).file_size)  # 본문 = 최대 파일
+    xml = zf.read(main).decode("utf-8", "ignore")
+
+    titles = [(m.start(), m.end(), _strip(m.group(1)))
+              for m in re.finditer(r"<TITLE[^>]*>(.*?)</TITLE>", xml, re.S)]
+    tops = [(s, e, t) for (s, e, t) in titles if re.match(r"^[IVXLC]+\.", t)]
+
+    out = {}
+    for i, (s, e, t) in enumerate(tops):
+        nxt = tops[i + 1][0] if i + 1 < len(tops) else len(xml)
+        out[t] = _strip(xml[e:nxt])
+    _doc_cache[ck] = out
     return out
