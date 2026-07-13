@@ -95,13 +95,72 @@ def get_statement(key, corp_code, year, reprt, fs_div):
 # 재무제표 표시 순서: 재무상태표 → 손익 → 포괄손익 → 현금흐름 → 자본변동
 _SJ_ORDER = {"BS": 0, "IS": 1, "CIS": 2, "CF": 3, "SCE": 4}
 
+# DART의 ord 값은 account_id 알파벳순이라 실제 표시순서가 아니다.
+# 표준 계정 ID 기준으로 정식 재무제표 순서를 지정한다(정확 매칭).
+_CANON_EXACT = {
+    # ── 재무상태표(BS): 자산 → 부채 → 자본
+    "ifrs-full_CurrentAssets": 100, "ifrs-full_NoncurrentAssets": 130, "ifrs-full_Assets": 160,
+    "ifrs-full_CurrentLiabilities": 200, "ifrs-full_NoncurrentLiabilities": 230, "ifrs-full_Liabilities": 260,
+    "ifrs-full_IssuedCapital": 300, "dart_IssuedCapitalOfCommonStock": 301,
+    "dart_IssuedCapitalOfPreferredStock": 302, "ifrs-full_SharePremium": 305,
+    "ifrs-full_RetainedEarnings": 310, "dart_ElementsOfOtherStockholdersEquity": 315,
+    "ifrs-full_EquityAttributableToOwnersOfParent": 320, "ifrs-full_NoncontrollingInterests": 325,
+    "ifrs-full_Equity": 330, "ifrs-full_EquityAndLiabilities": 340,
+    # ── 손익계산서(IS): 매출액 → 매출원가 → 매출총이익 → 판관비 → 영업이익 → … → 당기순이익 → EPS
+    "ifrs-full_Revenue": 500, "ifrs-full_CostOfSales": 501, "ifrs-full_GrossProfit": 502,
+    "dart_TotalSellingGeneralAdministrativeExpenses": 503,
+    "dart_OperatingIncomeLoss": 504, "ifrs-full_OperatingIncomeLoss": 504,
+    "dart_OtherGains": 505, "dart_OtherLosses": 506,
+    "ifrs-full_OtherIncome": 507, "ifrs-full_OtherExpenseByNature": 508,
+    "ifrs-full_FinanceIncome": 511, "ifrs-full_FinanceCosts": 512,
+    "ifrs-full_ProfitLossBeforeTax": 520, "ifrs-full_IncomeTaxExpenseContinuingOperations": 521,
+    "ifrs-full_ProfitLossFromContinuingOperations": 522, "ifrs-full_ProfitLossFromDiscontinuedOperations": 523,
+    "ifrs-full_ProfitLoss": 530,
+    "ifrs-full_ProfitLossAttributableToOwnersOfParent": 531,
+    "ifrs-full_ProfitLossAttributableToNoncontrollingInterests": 532,
+    "ifrs-full_BasicEarningsLossPerShare": 540, "ifrs-full_DilutedEarningsLossPerShare": 541,
+    # ── 포괄손익계산서(CIS)
+    "ifrs-full_OtherComprehensiveIncome": 602,
+    "ifrs-full_ComprehensiveIncome": 650,
+    "ifrs-full_ComprehensiveIncomeAttributableToOwnersOfParent": 651,
+    "ifrs-full_ComprehensiveIncomeAttributableToNoncontrollingInterests": 652,
+    # ── 현금흐름표(CF): 영업 → 투자 → 재무 → 기초/기말
+    "ifrs-full_CashFlowsFromUsedInOperatingActivities": 700,
+    "ifrs-full_CashFlowsFromUsedInInvestingActivities": 730,
+    "ifrs-full_CashFlowsFromUsedInFinancingActivities": 760,
+    "dart_CashAndCashEquivalentsAtBeginningOfPeriodCf": 795,
+    "dart_CashAndCashEquivalentsAtEndOfPeriodCf": 796,
+}
+# 접두어 매칭(변형 id가 많은 항목). 구체적인 접두어를 먼저 둔다.
+_CANON_PREFIX = [
+    ("ifrs-full_ShareOfProfitLossOfAssociates", 510),                       # 지분법이익
+    ("ifrs-full_OtherComprehensiveIncomeThatWillNotBeReclassified", 610),
+    ("ifrs-full_OtherComprehensiveIncomeThatWillBeReclassified", 630),
+    ("ifrs-full_GainsLossesOnRemeasurementsOfDefinedBenefitPlans", 611),
+    ("ifrs-full_OtherComprehensiveIncomeNetOfTax", 615),
+    ("ifrs-full_GainsLossesOnCashFlowHedges", 631),
+    ("ifrs-full_GainsLossesOnExchangeDifferencesOnTranslation", 632),
+    ("ifrs-full_ShareOfOtherComprehensiveIncome", 633),
+    ("ifrs-full_OtherComprehensiveIncome", 620),                            # 일반(구체 접두어 뒤)
+]
+
+
+def _canon_rank(aid):
+    if aid in _CANON_EXACT:
+        return _CANON_EXACT[aid]
+    for prefix, rank in _CANON_PREFIX:
+        if aid.startswith(prefix):
+            return rank
+    return 900   # 미지정(상세/사용자정의) 계정은 각 표 뒤쪽에 배치
+
 
 def _acct_sort_key(row):
     try:
         o = int(row.get("ord") or 0)
     except (TypeError, ValueError):
         o = 0
-    return (_SJ_ORDER.get(row.get("sj_div"), 99), o)
+    aid = row.get("account_id") or ""
+    return (_SJ_ORDER.get(row.get("sj_div"), 99), _canon_rank(aid), o)
 
 
 def get_accounts(key, corp_code, year, reprt, fs_div):
@@ -114,8 +173,7 @@ def get_accounts(key, corp_code, year, reprt, fs_div):
         sj = (row.get("sj_nm") or "").strip()
         if nm and nm not in seen:
             seen.add(nm)
-            sjo, ordv = _acct_sort_key(row)
-            out.append({"sj_nm": sj, "account_nm": nm, "sj": sjo, "ord": ordv})
+            out.append({"sj_nm": sj, "account_nm": nm, "_k": list(_acct_sort_key(row))})
     return out
 
 
