@@ -1,0 +1,10 @@
+.env
+.env.*
+*.key
+corpCode.xml
+*.xlsx
+__pycache__/
+.git
+main.py
+run.bat
+.claude/
