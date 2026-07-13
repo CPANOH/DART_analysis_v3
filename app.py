@@ -8,6 +8,7 @@ import io
 import os
 import re
 import time
+from collections import OrderedDict
 from datetime import datetime
 
 from flask import Flask, request, jsonify, send_file, render_template
@@ -54,30 +55,37 @@ FS_NAMES = {"CFS": "연결재무제표", "OFS": "별도재무제표"}
 
 # --- 플러스알파: 사업보고서 "내용" 카탈로그 -------------------------------
 
-# 정기보고서 주요정보 (구조화 데이터): endpoint -> 표시명
-MAJOR_INFO = [
-    {"id": "alotMatter", "name": "배당에 관한 사항"},
-    {"id": "hyslrSttus", "name": "최대주주 현황"},
-    {"id": "mrhlSttus", "name": "소액주주 현황"},
-    {"id": "exctvSttus", "name": "임원 현황"},
-    {"id": "empSttus", "name": "직원 현황"},
-    {"id": "tesstkAcqsDspsSttus", "name": "자기주식 취득·처분"},
-    {"id": "irdsSttus", "name": "증자(감자) 현황"},
-    {"id": "cprndNrdmpBlce", "name": "회사채 미상환 잔액"},
+# 정기보고서 주요정보 (구조화 데이터): 그룹 > 세부항목(endpoint)
+MAJOR_GROUPS = [
+    {"group": "배당", "items": [
+        {"id": "alotMatter", "name": "배당에 관한 사항"},
+    ]},
+    {"group": "주식·자본", "items": [
+        {"id": "irdsSttus", "name": "증자(감자) 현황"},
+        {"id": "tesstkAcqsDspsSttus", "name": "자기주식 취득·처분"},
+    ]},
+    {"group": "주주", "items": [
+        {"id": "hyslrSttus", "name": "최대주주 현황"},
+        {"id": "hyslrChgSttus", "name": "최대주주 변동현황"},
+        {"id": "mrhlSttus", "name": "소액주주 현황"},
+    ]},
+    {"group": "임직원·보수", "items": [
+        {"id": "exctvSttus", "name": "임원 현황"},
+        {"id": "empSttus", "name": "직원 현황"},
+        {"id": "hmvAuditAllSttus", "name": "이사·감사 전체 보수현황"},
+        {"id": "hmvAuditIndvdlBySttus", "name": "개인별 보수(5억 이상)"},
+    ]},
+    {"group": "투자·채무", "items": [
+        {"id": "otrCprInvstmntSttus", "name": "타법인 출자현황"},
+        {"id": "cprndNrdmpBlce", "name": "회사채 미상환 잔액"},
+        {"id": "srtpdPsndbtNrdmpBlce", "name": "단기사채 미상환 잔액"},
+        {"id": "entrprsBilScritsNrdmpBlce", "name": "기업어음 미상환 잔액"},
+        {"id": "detScritsIsuAcmslt", "name": "채무증권 발행실적"},
+        {"id": "pssrpCptalUseDtls", "name": "공모자금 사용내역"},
+        {"id": "prvsrpCptalUseDtls", "name": "사모자금 사용내역"},
+    ]},
 ]
-MAJOR_MAP = {m["id"]: m["name"] for m in MAJOR_INFO}
-
-# 사업보고서 본문 서술형 섹션: 표시명 -> 제목 매칭 키워드
-REPORT_SECTIONS = [
-    {"id": "회사의 개요", "kw": "회사의 개요"},
-    {"id": "사업의 내용", "kw": "사업의 내용"},
-    {"id": "경영진단 및 분석의견", "kw": "경영진단"},
-    {"id": "감사인의 감사의견", "kw": "감사의견"},
-    {"id": "주주에 관한 사항", "kw": "주주에 관한"},
-    {"id": "임원 및 직원", "kw": "임원 및 직원"},
-    {"id": "계열회사", "kw": "계열회사"},
-]
-SECTION_KW = {s["id"]: s["kw"] for s in REPORT_SECTIONS}
+MAJOR_MAP = {it["id"]: it["name"] for g in MAJOR_GROUPS for it in g["items"]}
 
 # DART 필드코드 -> 한글 라벨 (주요정보 시트 헤더용; 없으면 코드 그대로)
 FIELD_LABELS = {
@@ -133,9 +141,29 @@ def api_config():
     # 서버에 키가 설정돼 있으면 프론트에서 키 입력을 선택사항으로 안내.
     return jsonify({
         "has_server_key": bool(os.environ.get("DART_API_KEY", "").strip()),
-        "major_info": MAJOR_INFO,
-        "report_sections": [{"id": s["id"]} for s in REPORT_SECTIONS],
+        "major_groups": MAJOR_GROUPS,
     })
+
+
+@app.route("/api/toc")
+def api_toc():
+    """선택 회사의 사업보고서 목차(대분류>소분류)를 반환."""
+    key = resolve_key(request.args.get("key"))
+    corp_code = request.args.get("corp_code", "")
+    year = request.args.get("year", "")
+    if not key:
+        return jsonify({"ok": False, "error": "DART API 키가 필요합니다."}), 400
+    if not corp_code:
+        return jsonify({"ok": False, "error": "회사를 먼저 선택하세요."}), 400
+    try:
+        rcept = dart.find_report_rcept(key, corp_code, year)
+        if not rcept:
+            return jsonify({"ok": True, "toc": [], "msg": "해당 연도 사업보고서를 찾지 못했습니다."})
+        return jsonify({"ok": True, "toc": dart.get_report_toc(key, rcept)})
+    except dart.DartError as e:
+        return jsonify({"ok": False, "error": f"DART: {e}"}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"목차 로드 실패: {e}"}), 500
 
 
 @app.route("/api/industries")
@@ -247,29 +275,35 @@ def _build_major_sheet(ws, key, companies, year, reprt, endpoint):
     ws.freeze_panes = "A2"
 
 
-def _build_section_sheet(ws, key, companies, year, section_id):
-    """사업보고서 본문 서술형 섹션을 회사별로 모아 시트 작성."""
-    kw = SECTION_KW.get(section_id, section_id)
-    _write_header_row(ws, 1, ["회사명", "내용"])
+def _short_top(top):
+    """대분류 제목에서 로마숫자 접두어 제거 ('II. 사업의 내용' -> '사업의 내용')."""
+    return re.sub(r"^[IVXLC]+\.\s*", "", top).strip() or top
+
+
+def _build_section_sheet(ws, key, companies, year, top, subs):
+    """한 대분류(top)의 선택된 소분류(subs)들을 회사별로 시트에 작성.
+    행: 회사명 | 소분류 | 내용.  subs가 비면 대분류 전체."""
+    _write_header_row(ws, 1, ["회사명", "소분류", "내용"])
+    targets = subs if subs else [top]
     r = 2
     for c in companies:
         rcept = dart.find_report_rcept(key, c["corp_code"], year)
-        text = ""
-        if rcept:
-            for title, body in dart.get_report_sections(key, rcept).items():
-                if kw in title:
-                    text = body
-                    break
-        if not text:
-            text = "(해당 섹션을 찾지 못했습니다)"
-        chunks = [text[i:i + CELL_MAX] for i in range(0, len(text), CELL_MAX)][:5] or [""]
-        for j, ch in enumerate(chunks):
-            ws.cell(row=r, column=1, value=c["name"] if j == 0 else f"{c['name']} (이어서)")
-            cell = ws.cell(row=r, column=2, value=ch)
-            cell.alignment = Alignment(wrap_text=True, vertical="top")
-            r += 1
-    ws.column_dimensions["A"].width = 20
-    ws.column_dimensions["B"].width = 100
+        for sub in targets:
+            text = dart.get_section_text(key, rcept, top, sub) if rcept else ""
+            if not text:
+                text = "(내용 없음)"
+            label = "전체" if sub == top else sub
+            chunks = [text[i:i + CELL_MAX] for i in range(0, len(text), CELL_MAX)][:5] or [""]
+            for j, ch in enumerate(chunks):
+                ws.cell(row=r, column=1, value=c["name"] if j == 0 else "")
+                ws.cell(row=r, column=2, value=label if j == 0 else "(이어서)")
+                cell = ws.cell(row=r, column=3, value=ch)
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+                r += 1
+    ws.column_dimensions["A"].width = 16
+    ws.column_dimensions["B"].width = 26
+    ws.column_dimensions["C"].width = 100
+    ws.freeze_panes = "A2"
 
 
 @app.route("/api/export", methods=["POST"])
@@ -283,8 +317,18 @@ def api_export():
     companies = data.get("companies", [])   # [{name, corp_code}]
     accounts = data.get("accounts", [])     # [account_nm, ...]
     # 플러스알파(선택): 사업보고서 내용
-    major = [m for m in data.get("major", []) if m in MAJOR_MAP]        # 주요정보 endpoint id
-    sections = [s for s in data.get("sections", []) if s in SECTION_KW]  # 본문 섹션 id
+    major = [m for m in data.get("major", []) if m in MAJOR_MAP]   # 주요정보 endpoint id
+    # 본문 섹션: [{top, sub}] -> 대분류별로 소분류 묶기
+    sec_by_top = OrderedDict()
+    for it in data.get("sections", []):
+        top = (it or {}).get("top")
+        sub = (it or {}).get("sub")
+        if not top:
+            continue
+        sec_by_top.setdefault(top, [])
+        if sub and sub != top and sub not in sec_by_top[top]:
+            sec_by_top[top].append(sub)
+    sections = sec_by_top
 
     if not (key and companies):
         return jsonify({"ok": False, "error": "API 키와 회사를 선택하세요."}), 400
@@ -343,12 +387,12 @@ def api_export():
             first_used = True
             _build_major_sheet(ws, key, companies, year, reprt, mid)
 
-        # ---- 3) 사업보고서 본문 섹션 시트들 ----------------------------
-        for sid in sections:
+        # ---- 3) 사업보고서 본문 섹션 시트들 (대분류별 시트) -------------
+        for top, subs in sections.items():
             ws = wb.active if not first_used else wb.create_sheet()
-            ws.title = _safe_sheet_title(wb, sid)
+            ws.title = _safe_sheet_title(wb, _short_top(top))
             first_used = True
-            _build_section_sheet(ws, key, companies, year, sid)
+            _build_section_sheet(ws, key, companies, year, top, subs)
 
     except dart.DartError as e:
         return jsonify({"ok": False, "error": f"DART: {e}"}), 400

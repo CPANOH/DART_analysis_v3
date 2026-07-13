@@ -80,8 +80,21 @@
   footer { text-align:center; color:var(--muted); font-size:12px; padding:6px 0 28px; }
   footer b { color:var(--brand2); letter-spacing:1px; }
   .extragrid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-  .grouphd { font-weight:600; margin-bottom:6px; font-size:13px; }
+  .grouphd { font-weight:600; margin-bottom:6px; font-size:13px; overflow:hidden; }
   @media (max-width:640px){ .extragrid { grid-template-columns:1fr; } }
+  .grp { border-bottom:1px solid var(--line); }
+  .grp:last-child { border-bottom:none; }
+  .grphd {
+    display:flex; align-items:center; gap:8px; padding:6px 8px; cursor:pointer;
+    font-weight:600; font-size:13px; user-select:none;
+  }
+  .grphd:hover { background:#eef3f9; }
+  .grphd .arw { color:var(--muted); font-size:11px; width:12px; transition:transform .15s; }
+  .grphd.open .arw { transform:rotate(90deg); }
+  .grphd input { width:auto; }
+  .grpbody { padding:2px 8px 6px 26px; display:none; }
+  .grphd.open + .grpbody { display:block; }
+  .grpbody .opt { padding:4px 6px; }
 </style>
 </head>
 <body>
@@ -169,12 +182,14 @@
     <div class="muted" style="margin-bottom:10px">계정과목과 <b>별개</b>로, 원하는 항목만 고르면 엑셀에 시트로 추가됩니다. 안 골라도 다운로드에는 지장 없습니다.</div>
     <div class="extragrid">
       <div>
-        <div class="grouphd">정기보고서 주요정보 <span class="muted">(표 데이터)</span></div>
-        <div class="list small" id="majorList"><div class="muted" style="padding:8px">불러오는 중…</div></div>
+        <div class="grouphd">정기보고서 주요정보 <span class="muted">(표 데이터 · 그룹→항목)</span></div>
+        <div class="list" id="majorList"><div class="muted" style="padding:8px">불러오는 중…</div></div>
       </div>
       <div>
-        <div class="grouphd">본문 서술형 섹션 <span class="muted">(텍스트)</span></div>
-        <div class="list small" id="sectionList"><div class="muted" style="padding:8px">불러오는 중…</div></div>
+        <div class="grouphd">본문 서술형 섹션 <span class="muted">(대분류→소분류)</span>
+          <button id="loadToc" style="float:right;padding:3px 9px;font-size:12px">목차 불러오기 ▶</button>
+        </div>
+        <div class="list" id="sectionTree"><div class="muted" style="padding:8px">회사 선택 후 "목차 불러오기"를 누르세요.</div></div>
       </div>
     </div>
   </div>
@@ -195,8 +210,8 @@ let companies = [];   // 현재 업종의 회사들
 let accounts = [];    // 로드된 계정과목
 let compSelected = new Set();  // 선택된 회사 corp_code (검색/필터해도 유지)
 let accSelected = new Set();   // 선택된 계정과목명 (검색/필터해도 유지)
-let majorSel = new Set();      // 플러스알파: 선택된 주요정보 id
-let sectionSel = new Set();    // 플러스알파: 선택된 본문 섹션 id
+let majorSel = new Set();      // 플러스알파: 선택된 주요정보 endpoint id
+let sectionSel = new Map();    // 플러스알파: 선택된 본문 소분류  key(top|||sub) -> {top, sub}
 
 function showErr(msg){ statusBox.className="err"; statusBox.textContent="⚠ "+msg; }
 function showInfo(msg){ statusBox.className="info"; statusBox.textContent=msg; }
@@ -227,32 +242,109 @@ fetch("/api/config").then(r=>r.json()).then(j=>{
     ind.style.cssText = "padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#eef7ef;color:var(--ok);font-weight:600;font-size:13px;";
     $("#apikey").parentElement.appendChild(ind);
   }
-  renderExtra(j.major_info || [], j.report_sections || []);
+  renderMajorGroups(j.major_groups || []);
 }).catch(()=>{});
 
-// 플러스알파: 사업보고서 내용 체크박스 렌더
-function renderExtra(majorInfo, sections){
-  const mBox = $("#majorList"), sBox = $("#sectionList");
-  mBox.innerHTML = ""; sBox.innerHTML = "";
-  majorInfo.forEach(m => mBox.appendChild(makeExtraOpt(m.id, m.name, majorSel)));
-  sections.forEach(s => sBox.appendChild(makeExtraOpt(s.id, s.id, sectionSel)));
-  if(!majorInfo.length) mBox.innerHTML = '<div class="muted" style="padding:8px">항목 없음</div>';
-  if(!sections.length) sBox.innerHTML = '<div class="muted" style="padding:8px">항목 없음</div>';
-  updateExtraCount();
-}
-function makeExtraOpt(id, label, set){
-  const row = document.createElement("label");
-  row.className = "opt";
-  row.innerHTML = `<input type="checkbox"><span>${label}</span>`;
-  row.querySelector("input").addEventListener("change", e => {
-    if(e.target.checked) set.add(id); else set.delete(id);
-    updateExtraCount(); updateDownload();
-  });
-  return row;
-}
 function updateExtraCount(){
   const n = majorSel.size + sectionSel.size;
   $("#extraCount").textContent = n ? `선택 ${n}` : '';
+}
+// 그룹 헤더 체크박스 상태(전체/일부/없음) 동기화
+function syncGroupCheckbox(hd, body){
+  const cbs = [...body.querySelectorAll('input[type=checkbox]')];
+  const checked = cbs.filter(c => c.checked).length;
+  const gcb = hd.querySelector('input[type=checkbox]');
+  gcb.checked = checked === cbs.length && cbs.length > 0;
+  gcb.indeterminate = checked > 0 && checked < cbs.length;
+}
+// 공통: 접이식 그룹 DOM 생성
+function makeGroup(titleHtml, count){
+  const grp = document.createElement("div"); grp.className = "grp";
+  const hd = document.createElement("div"); hd.className = "grphd";
+  hd.innerHTML = `<span class="arw">▶</span><input type="checkbox"><span>${titleHtml}</span>`
+    + `<span style="margin-left:auto;font-size:11px;color:var(--muted)">${count}</span>`;
+  const body = document.createElement("div"); body.className = "grpbody";
+  hd.addEventListener("click", e => { if(e.target.tagName !== "INPUT") hd.classList.toggle("open"); });
+  grp.appendChild(hd); grp.appendChild(body);
+  return {grp, hd, body};
+}
+
+// --- 주요정보: 그룹 > 항목 (접이식 2단계) ---
+function renderMajorGroups(groups){
+  const box = $("#majorList"); box.innerHTML = "";
+  if(!groups.length){ box.innerHTML = '<div class="muted" style="padding:8px">항목 없음</div>'; return; }
+  groups.forEach(g => {
+    const {grp, hd, body} = makeGroup(g.group, g.items.length);
+    g.items.forEach(it => {
+      const row = document.createElement("label"); row.className = "opt";
+      row.innerHTML = `<input type="checkbox" value="${it.id}" ${majorSel.has(it.id)?"checked":""}><span>${it.name}</span>`;
+      row.querySelector("input").addEventListener("change", e => {
+        if(e.target.checked) majorSel.add(it.id); else majorSel.delete(it.id);
+        syncGroupCheckbox(hd, body); updateExtraCount(); updateDownload();
+      });
+      body.appendChild(row);
+    });
+    hd.querySelector("input").addEventListener("change", e => {
+      body.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        cb.checked = e.target.checked;
+        if(e.target.checked) majorSel.add(cb.value); else majorSel.delete(cb.value);
+      });
+      updateExtraCount(); updateDownload();
+    });
+    box.appendChild(grp);
+  });
+}
+
+// --- 본문: 목차 불러오기 → 대분류 > 소분류 (접이식 2단계) ---
+$("#loadToc").onclick = async () => {
+  if(!hasKey()) return showErr("DART API 키가 필요합니다.");
+  const sel = selectedCompanies();
+  if(!sel.length) return showErr('먼저 회사를 선택하세요. (목차는 첫 번째 선택 회사 기준으로 불러옵니다)');
+  const box = $("#sectionTree");
+  box.innerHTML = '<div class="muted" style="padding:8px">목차 불러오는 중… (본문을 받아오므로 잠시 걸려요)</div>';
+  $("#loadToc").disabled = true;
+  try{
+    const p = new URLSearchParams({key:key(), corp_code:sel[0].corp_code, year:$("#year").value});
+    const r = await fetch("/api/toc?"+p);
+    const j = await r.json();
+    if(!j.ok){ box.innerHTML=''; return showErr(j.error); }
+    renderTocTree(j.toc || [], sel[0].name);
+    if(!(j.toc||[]).length) showInfo(j.msg || "목차를 찾지 못했습니다.");
+  }catch(e){ showErr("목차 로드 실패: "+e); }
+  finally{ $("#loadToc").disabled = false; }
+};
+function tocKey(top, sub){ return top + "|||" + sub; }
+function renderTocTree(toc, refName){
+  const box = $("#sectionTree"); box.innerHTML = "";
+  if(!toc.length){ box.innerHTML = '<div class="muted" style="padding:8px">목차 없음</div>'; return; }
+  const note = document.createElement("div");
+  note.className = "muted"; note.style.cssText = "padding:4px 8px";
+  note.textContent = `기준: ${refName} · 원하는 소분류를 선택하세요`;
+  box.appendChild(note);
+  toc.forEach(g => {
+    const subs = (g.subs && g.subs.length) ? g.subs : [g.top];   // 소분류 없으면 대분류 자체
+    const {grp, hd, body} = makeGroup(g.top, subs.length);
+    subs.forEach(sub => {
+      const k = tocKey(g.top, sub);
+      const row = document.createElement("label"); row.className = "opt";
+      row.innerHTML = `<input type="checkbox" ${sectionSel.has(k)?"checked":""}><span>${sub===g.top?"(대분류 전체)":sub}</span>`;
+      row.querySelector("input").addEventListener("change", e => {
+        if(e.target.checked) sectionSel.set(k, {top:g.top, sub:sub}); else sectionSel.delete(k);
+        syncGroupCheckbox(hd, body); updateExtraCount(); updateDownload();
+      });
+      body.appendChild(row);
+    });
+    hd.querySelector("input").addEventListener("change", e => {
+      body.querySelectorAll('input[type=checkbox]').forEach((cb, idx) => {
+        const k = tocKey(g.top, subs[idx]);
+        cb.checked = e.target.checked;
+        if(e.target.checked) sectionSel.set(k, {top:g.top, sub:subs[idx]}); else sectionSel.delete(k);
+      });
+      updateExtraCount(); updateDownload();
+    });
+    box.appendChild(grp);
+  });
+  updateExtraCount();
 }
 // 클라이언트 키가 있으면 그것을, 없으면 서버 키(빈 문자열 전송 시 서버가 대체)를 사용
 const hasKey = () => !!(key() || hasServerKey);
@@ -274,6 +366,9 @@ $("#industry").addEventListener("change", async e => {
   const no = e.target.value;
   companies = []; accounts = [];
   compSelected.clear(); accSelected.clear();
+  sectionSel.clear();
+  $("#sectionTree").innerHTML = '<div class="muted" style="padding:8px">회사 선택 후 "목차 불러오기"를 누르세요.</div>';
+  updateExtraCount();
   renderAccounts(); updateDownload();
   const box = $("#companyList");
   if(!no){ box.innerHTML='<div class="muted" style="padding:8px">먼저 산업군을 선택하세요.</div>'; return; }
@@ -419,7 +514,7 @@ $("#download").onclick = async () => {
       key:key(), year:$("#year").value, reprt:$("#reprt").value, fs:$("#fs").value,
       industry: $("#industry").selectedOptions[0]?.text || "",
       companies: sel, accounts: acc,
-      major: [...majorSel], sections: [...sectionSel]
+      major: [...majorSel], sections: [...sectionSel.values()]
     };
     const r = await fetch("/api/export", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
     if(!r.ok){ const j = await r.json().catch(()=>({error:"다운로드 실패"})); return showErr(j.error); }

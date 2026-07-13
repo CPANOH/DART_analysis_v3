@@ -163,11 +163,13 @@ def _strip(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
-_doc_cache = {}   # (key, rcept_no) -> {대분류제목: 텍스트}
+_doc_cache = {}   # (key, rcept_no) -> (xml, titles[(start, end, text)])
+_RE_TOP = re.compile(r"^[IVXLC]+\.")        # 대분류: 로마숫자.
+_RE_SUB = re.compile(r"^\d+(-\d+)?\.")      # 소분류: 숫자. / 숫자-숫자.
 
 
-def get_report_sections(key, rcept_no):
-    """사업보고서 본문에서 대분류(로마숫자) 섹션별 텍스트를 추출. {'I. 회사의 개요': '...'}"""
+def _load_doc(key, rcept_no):
+    """사업보고서 원본 XML과 TITLE(목차) 위치 목록을 읽어 캐시."""
     ck = (key, rcept_no)
     if ck in _doc_cache:
         return _doc_cache[ck]
@@ -175,20 +177,82 @@ def get_report_sections(key, rcept_no):
     r = requests.get(f"{API}/document.xml",
                      params={"crtfc_key": key, "rcept_no": rcept_no}, timeout=90)
     if r.content[:2] != b"PK":
-        _doc_cache[ck] = {}
-        return {}
+        _doc_cache[ck] = ("", [])
+        return _doc_cache[ck]
 
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     main = max(zf.namelist(), key=lambda n: zf.getinfo(n).file_size)  # 본문 = 최대 파일
     xml = zf.read(main).decode("utf-8", "ignore")
-
     titles = [(m.start(), m.end(), _strip(m.group(1)))
               for m in re.finditer(r"<TITLE[^>]*>(.*?)</TITLE>", xml, re.S)]
-    tops = [(s, e, t) for (s, e, t) in titles if re.match(r"^[IVXLC]+\.", t)]
+    titles = [(s, e, t) for (s, e, t) in titles if t]
+    _doc_cache[ck] = (xml, titles)
+    return _doc_cache[ck]
 
-    out = {}
-    for i, (s, e, t) in enumerate(tops):
-        nxt = tops[i + 1][0] if i + 1 < len(tops) else len(xml)
-        out[t] = _strip(xml[e:nxt])
-    _doc_cache[ck] = out
-    return out
+
+def get_report_toc(key, rcept_no):
+    """사업보고서 목차를 대분류>소분류 트리로 반환.
+    재무제표(계정과목으로 이미 다룸)와 상세표는 제외. [{'top':..., 'subs':[...]}]"""
+    _, titles = _load_doc(key, rcept_no)
+    toc, cur = [], None
+    for (s, e, t) in titles:
+        if _RE_TOP.match(t):
+            skip = ("재무에 관한" in t) or ("상세표" in t)
+            cur = None if skip else {"top": t, "subs": []}
+            if cur is not None:
+                toc.append(cur)
+        elif _RE_SUB.match(t) and cur is not None:
+            if t not in cur["subs"]:
+                cur["subs"].append(t)
+    return toc
+
+
+def _find_title(titles, text):
+    for i, (s, e, t) in enumerate(titles):
+        if t == text:
+            return i
+    for i, (s, e, t) in enumerate(titles):
+        if text and (text in t or t in text):
+            return i
+    return None
+
+
+def get_section_text(key, rcept_no, top, sub=None):
+    """대분류(top) 범위 안에서 소분류(sub) 텍스트를 추출. sub가 없으면 대분류 전체."""
+    xml, titles = _load_doc(key, rcept_no)
+    if not titles:
+        return ""
+    ti = _find_title(titles, top)
+    if ti is None:
+        return ""
+
+    top_start = titles[ti][1]
+    top_end = len(xml)                       # 다음 대분류 전까지가 이 대분류 범위
+    for j in range(ti + 1, len(titles)):
+        if _RE_TOP.match(titles[j][2]):
+            top_end = titles[j][0]
+            break
+
+    if not sub or sub == top:
+        return _strip(xml[top_start:top_end])
+
+    # 대분류 범위 안에서 소분류 찾기
+    si = None
+    for j in range(ti + 1, len(titles)):
+        if titles[j][0] >= top_end:
+            break
+        if titles[j][2] == sub or sub in titles[j][2]:
+            si = j
+            break
+    if si is None:
+        return ""
+
+    sub_start = titles[si][1]
+    sub_end = top_end
+    for j in range(si + 1, len(titles)):     # 다음 소분류(또는 대분류 끝)까지
+        if titles[j][0] >= top_end:
+            break
+        if _RE_SUB.match(titles[j][2]):
+            sub_end = titles[j][0]
+            break
+    return _strip(xml[sub_start:sub_end])
