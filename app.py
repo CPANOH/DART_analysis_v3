@@ -219,6 +219,8 @@ def api_accounts():
                 if a["account_nm"] not in seen:
                     seen.add(a["account_nm"])
                     merged.append(a)
+        # 재무제표 표시 순서대로 정렬(여러 회사 합쳐도 유지)
+        merged.sort(key=lambda a: (a.get("sj", 99), a.get("ord", 0)))
         return jsonify({"ok": True, "accounts": merged})
     except dart.DartError as e:
         return jsonify({"ok": False, "error": f"DART: {e}"}), 400

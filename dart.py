@@ -92,16 +92,30 @@ def get_statement(key, corp_code, year, reprt, fs_div):
     return rows
 
 
+# 재무제표 표시 순서: 재무상태표 → 손익 → 포괄손익 → 현금흐름 → 자본변동
+_SJ_ORDER = {"BS": 0, "IS": 1, "CIS": 2, "CF": 3, "SCE": 4}
+
+
+def _acct_sort_key(row):
+    try:
+        o = int(row.get("ord") or 0)
+    except (TypeError, ValueError):
+        o = 0
+    return (_SJ_ORDER.get(row.get("sj_div"), 99), o)
+
+
 def get_accounts(key, corp_code, year, reprt, fs_div):
-    """계정과목 목록만 추출. [{'sj_nm': '재무상태표', 'account_nm': '자산총계'}, ...]"""
+    """계정과목 목록을 재무제표 표시 순서대로 반환.
+    [{'sj_nm': '재무상태표', 'account_nm': '자산총계', 'sj': 0, 'ord': 7}, ...]"""
     rows = get_statement(key, corp_code, year, reprt, fs_div)
     out, seen = [], set()
-    for row in rows:
+    for row in sorted(rows, key=_acct_sort_key):
         nm = (row.get("account_nm") or "").strip()
         sj = (row.get("sj_nm") or "").strip()
         if nm and nm not in seen:
             seen.add(nm)
-            out.append({"sj_nm": sj, "account_nm": nm})
+            sjo, ordv = _acct_sort_key(row)
+            out.append({"sj_nm": sj, "account_nm": nm, "sj": sjo, "ord": ordv})
     return out
 
 
