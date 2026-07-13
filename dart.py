@@ -217,8 +217,8 @@ def _find_title(titles, text):
     return None
 
 
-def get_section_text(key, rcept_no, top, sub=None):
-    """대분류(top) 범위 안에서 소분류(sub) 텍스트를 추출. sub가 없으면 대분류 전체."""
+def _section_slice(key, rcept_no, top, sub=None):
+    """대분류(top) 범위 안에서 소분류(sub)에 해당하는 원본 XML 조각을 반환."""
     xml, titles = _load_doc(key, rcept_no)
     if not titles:
         return ""
@@ -234,10 +234,9 @@ def get_section_text(key, rcept_no, top, sub=None):
             break
 
     if not sub or sub == top:
-        return _strip(xml[top_start:top_end])
+        return xml[top_start:top_end]
 
-    # 대분류 범위 안에서 소분류 찾기
-    si = None
+    si = None                                # 대분류 범위 안에서 소분류 찾기
     for j in range(ti + 1, len(titles)):
         if titles[j][0] >= top_end:
             break
@@ -255,4 +254,46 @@ def get_section_text(key, rcept_no, top, sub=None):
         if _RE_SUB.match(titles[j][2]):
             sub_end = titles[j][0]
             break
-    return _strip(xml[sub_start:sub_end])
+    return xml[sub_start:sub_end]
+
+
+def get_section_text(key, rcept_no, top, sub=None):
+    """소분류 텍스트(태그 제거)."""
+    return _strip(_section_slice(key, rcept_no, top, sub))
+
+
+def _parse_table(tbl_xml):
+    """<TABLE> 조각을 2차원 배열(행 x 셀)로 변환."""
+    rows = []
+    for tr in re.findall(r"<TR[^>]*>(.*?)</TR>", tbl_xml, re.S):
+        cells = re.findall(r"<(?:TD|TE|TH|TU)[^>]*>(.*?)</(?:TD|TE|TH|TU)>", tr, re.S)
+        row = [_strip(catch) for catch in cells]
+        if any(row):
+            rows.append(row)
+    return rows
+
+
+def _add_text_blocks(blocks, frag):
+    """XML 조각에서 <P> 문단들을 텍스트 블록으로 추가."""
+    ps = re.findall(r"<P[^>]*>(.*?)</P>", frag, re.S)
+    for p in (ps if ps else [frag]):
+        t = _strip(p)
+        if t:
+            blocks.append(("text", t))
+
+
+def get_section_blocks(key, rcept_no, top, sub=None):
+    """소분류 내용을 문단/표 블록 리스트로 반환.
+    [('text', '문단...'), ('table', [[셀,셀],[...]]), ...]"""
+    frag = _section_slice(key, rcept_no, top, sub)
+    if not frag:
+        return []
+    blocks, pos = [], 0
+    for m in re.finditer(r"<TABLE[^>]*>.*?</TABLE>", frag, re.S):
+        _add_text_blocks(blocks, frag[pos:m.start()])
+        rows = _parse_table(m.group(0))
+        if rows:
+            blocks.append(("table", rows))
+        pos = m.end()
+    _add_text_blocks(blocks, frag[pos:])
+    return blocks

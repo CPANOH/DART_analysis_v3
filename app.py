@@ -16,7 +16,7 @@ from flask import Flask, request, jsonify, send_file, render_template
 import naver
 import dart
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -283,32 +283,93 @@ def _short_top(top):
     return re.sub(r"^[IVXLC]+\.\s*", "", top).strip() or top
 
 
+SECTION_SPAN = 14          # 문단 셀 병합 너비(열 수)
+SECTION_COLW = 12          # 각 열 너비
+_TBL_BORDER = Border(*(4 * [Side(style="thin", color="D0D5DD")]))
+_TBL_HDR_FILL = PatternFill("solid", fgColor="EAF0F7")
+
+
+def _cell_val(s):
+    """표 셀 문자열을 가능하면 숫자로. '(1,234)'는 음수로."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    t = s.replace(",", "")
+    neg = t.startswith("(") and t.endswith(")")
+    if neg:
+        t = t[1:-1]
+    try:
+        v = int(t)
+    except ValueError:
+        try:
+            v = float(t)
+        except ValueError:
+            return s
+    return -v if neg else v
+
+
+def _prose_chunks(text, size=1200):
+    return [text[i:i + size] for i in range(0, len(text), size)] or [""]
+
+
+def _prose_height(text):
+    per_line = max(24, SECTION_SPAN * SECTION_COLW // 2)   # 한글 기준 대략
+    lines = max(1, -(-len(text) // per_line))
+    return min(lines * 15 + 4, 620)
+
+
 def _build_section_sheet(ws, key, companies, years, top, subs):
-    """한 대분류(top)의 선택된 소분류(subs)들을 회사×연도별로 시트에 작성.
-    행: 회사명 | 연도 | 소분류 | 내용.  subs가 비면 대분류 전체."""
-    _write_header_row(ws, 1, ["회사명", "연도", "소분류", "내용"])
+    """대분류(top)의 선택 소분류들을 회사×연도별로 '문서형'으로 작성.
+    문단은 줄바꿈 문단, 표는 실제 셀 격자로 렌더링."""
+    span = SECTION_SPAN
+    for ci in range(1, span + 1):
+        ws.column_dimensions[get_column_letter(ci)].width = SECTION_COLW
     targets = subs if subs else [top]
-    r = 2
+    r = 1
     for c in companies:
         for y in years:
             rcept = dart.find_report_rcept(key, c["corp_code"], y)
             for sub in targets:
-                text = dart.get_section_text(key, rcept, top, sub) if rcept else ""
-                if not text:
-                    text = "(내용 없음)"
-                label = "전체" if sub == top else sub
-                chunks = [text[i:i + CELL_MAX] for i in range(0, len(text), CELL_MAX)][:5] or [""]
-                for j, ch in enumerate(chunks):
-                    ws.cell(row=r, column=1, value=c["name"] if j == 0 else "")
-                    ws.cell(row=r, column=2, value=y if j == 0 else "")
-                    ws.cell(row=r, column=3, value=label if j == 0 else "(이어서)")
-                    cell = ws.cell(row=r, column=4, value=ch)
-                    cell.alignment = Alignment(wrap_text=True, vertical="top")
-                    r += 1
-    ws.column_dimensions["A"].width = 16
-    ws.column_dimensions["B"].width = 8
-    ws.column_dimensions["C"].width = 26
-    ws.column_dimensions["D"].width = 100
+                # 블록 헤더: 회사 | 연도 | 소분류
+                label = f'{c["name"]}    |    {y}    |    {"전체" if sub == top else sub}'
+                ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=span)
+                hc = ws.cell(row=r, column=1, value=label)
+                hc.fill = HEADER_FILL
+                hc.font = HEADER_FONT
+                hc.alignment = Alignment(vertical="center")
+                ws.row_dimensions[r].height = 20
+                r += 1
+
+                blocks = dart.get_section_blocks(key, rcept, top, sub) if rcept else []
+                if not blocks:
+                    ws.cell(row=r, column=1, value="(내용 없음)")
+                    r += 2
+                    continue
+
+                for kind, payload in blocks:
+                    if kind == "text":
+                        for chunk in _prose_chunks(payload):
+                            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=span)
+                            cell = ws.cell(row=r, column=1, value=chunk)
+                            cell.alignment = Alignment(wrap_text=True, vertical="top")
+                            ws.row_dimensions[r].height = _prose_height(chunk)
+                            r += 1
+                    else:  # table
+                        for ti, trow in enumerate(payload):
+                            for ci, val in enumerate(trow[:30], start=1):
+                                v = _cell_val(val)
+                                cc = ws.cell(row=r, column=ci, value=v)
+                                cc.font = Font(size=9, bold=(ti == 0))
+                                cc.border = _TBL_BORDER
+                                cc.alignment = Alignment(
+                                    vertical="top", wrap_text=True,
+                                    horizontal="right" if isinstance(v, (int, float)) else "left")
+                                if isinstance(v, int):
+                                    cc.number_format = "#,##0"
+                                if ti == 0:
+                                    cc.fill = _TBL_HDR_FILL
+                            r += 1
+                    r += 1   # 블록 사이 빈 줄
     ws.freeze_panes = "A2"
 
 
