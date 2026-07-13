@@ -249,28 +249,31 @@ def _write_header_row(ws, row, headers):
         cell.alignment = Alignment(horizontal="center")
 
 
-def _build_major_sheet(ws, key, companies, year, reprt, endpoint):
-    """정기보고서 주요정보 1개 항목을 회사별로 모아 시트 작성."""
-    all_rows, cols = [], []
+def _build_major_sheet(ws, key, companies, years, reprt, endpoint):
+    """정기보고서 주요정보 1개 항목을 회사×연도별로 모아 시트 작성."""
+    all_rows, cols = [], []   # all_rows: [(company_name, year, row_dict)]
     for c in companies:
-        rows, _ = dart.get_major_info(key, c["corp_code"], year, reprt, endpoint)
-        for r in rows:
-            all_rows.append((c["name"], r))
-            if not cols:
-                cols = [k for k in r.keys() if k not in SKIP_FIELDS]
-        time.sleep(0.15)   # 연속 호출 제한 완화
+        for y in years:
+            rows, _ = dart.get_major_info(key, c["corp_code"], y, reprt, endpoint)
+            for r in rows:
+                all_rows.append((c["name"], y, r))
+                if not cols:
+                    cols = [k for k in r.keys() if k not in SKIP_FIELDS]
+            time.sleep(0.12)   # 연속 호출 제한 완화
 
-    headers = ["회사명"] + [FIELD_LABELS.get(k, k) for k in cols]
+    headers = ["회사명", "연도"] + [FIELD_LABELS.get(k, k) for k in cols]
     _write_header_row(ws, 1, headers)
-    for ri, (cname, r) in enumerate(all_rows, start=2):
+    for ri, (cname, y, r) in enumerate(all_rows, start=2):
         ws.cell(row=ri, column=1, value=cname)
-        for ci, k in enumerate(cols, start=2):
+        ws.cell(row=ri, column=2, value=y)
+        for ci, k in enumerate(cols, start=3):
             ws.cell(row=ri, column=ci, value=r.get(k))
     if not all_rows:
         ws.cell(row=2, column=1, value="(조회된 데이터 없음)")
 
     ws.column_dimensions["A"].width = 18
-    for ci in range(2, len(headers) + 1):
+    ws.column_dimensions["B"].width = 8
+    for ci in range(3, len(headers) + 1):
         ws.column_dimensions[get_column_letter(ci)].width = 16
     ws.freeze_panes = "A2"
 
@@ -280,37 +283,103 @@ def _short_top(top):
     return re.sub(r"^[IVXLC]+\.\s*", "", top).strip() or top
 
 
-def _build_section_sheet(ws, key, companies, year, top, subs):
-    """한 대분류(top)의 선택된 소분류(subs)들을 회사별로 시트에 작성.
-    행: 회사명 | 소분류 | 내용.  subs가 비면 대분류 전체."""
-    _write_header_row(ws, 1, ["회사명", "소분류", "내용"])
+def _build_section_sheet(ws, key, companies, years, top, subs):
+    """한 대분류(top)의 선택된 소분류(subs)들을 회사×연도별로 시트에 작성.
+    행: 회사명 | 연도 | 소분류 | 내용.  subs가 비면 대분류 전체."""
+    _write_header_row(ws, 1, ["회사명", "연도", "소분류", "내용"])
     targets = subs if subs else [top]
     r = 2
     for c in companies:
-        rcept = dart.find_report_rcept(key, c["corp_code"], year)
-        for sub in targets:
-            text = dart.get_section_text(key, rcept, top, sub) if rcept else ""
-            if not text:
-                text = "(내용 없음)"
-            label = "전체" if sub == top else sub
-            chunks = [text[i:i + CELL_MAX] for i in range(0, len(text), CELL_MAX)][:5] or [""]
-            for j, ch in enumerate(chunks):
-                ws.cell(row=r, column=1, value=c["name"] if j == 0 else "")
-                ws.cell(row=r, column=2, value=label if j == 0 else "(이어서)")
-                cell = ws.cell(row=r, column=3, value=ch)
-                cell.alignment = Alignment(wrap_text=True, vertical="top")
-                r += 1
+        for y in years:
+            rcept = dart.find_report_rcept(key, c["corp_code"], y)
+            for sub in targets:
+                text = dart.get_section_text(key, rcept, top, sub) if rcept else ""
+                if not text:
+                    text = "(내용 없음)"
+                label = "전체" if sub == top else sub
+                chunks = [text[i:i + CELL_MAX] for i in range(0, len(text), CELL_MAX)][:5] or [""]
+                for j, ch in enumerate(chunks):
+                    ws.cell(row=r, column=1, value=c["name"] if j == 0 else "")
+                    ws.cell(row=r, column=2, value=y if j == 0 else "")
+                    ws.cell(row=r, column=3, value=label if j == 0 else "(이어서)")
+                    cell = ws.cell(row=r, column=4, value=ch)
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
+                    r += 1
     ws.column_dimensions["A"].width = 16
-    ws.column_dimensions["B"].width = 26
-    ws.column_dimensions["C"].width = 100
+    ws.column_dimensions["B"].width = 8
+    ws.column_dimensions["C"].width = 26
+    ws.column_dimensions["D"].width = 100
     ws.freeze_panes = "A2"
+
+
+def _build_accounts_sheet(ws, key, companies, years, reprt, fs, accounts, industry):
+    """계정과목 비교 시트. 열 = 회사(병합) × 연도, 행 = 계정과목."""
+    per = len(years)
+    col_specs = []   # [(company_name, year, {account_nm: amount})]  회사-major 순서
+    for c in companies:
+        for y in years:
+            rows = dart.get_statement(key, c["corp_code"], y, reprt, fs)
+            amap = {}
+            for r in rows:
+                nm = (r.get("account_nm") or "").strip()
+                if nm and nm not in amap:
+                    amap[nm] = _num(r.get("thstrm_amount"))
+            col_specs.append((c["name"], y, amap))
+
+    meta = [
+        "재무분석기 · CPA KOOK",
+        f"산업군: {industry}",
+        f"연도: {', '.join(str(y) for y in years)}   보고서: {REPRT_NAMES.get(reprt, reprt)}   구분: {FS_NAMES.get(fs, fs)}",
+        f"생성일시: {datetime.now():%Y-%m-%d %H:%M}   |   작성: CPA KOOK",
+    ]
+    for i, line in enumerate(meta, start=1):
+        ws.cell(row=i, column=1, value=line).font = Font(bold=(i == 1), size=13 if i == 1 else 10)
+
+    h1 = len(meta) + 2   # 회사명 헤더(병합)
+    h2 = h1 + 1          # 연도 헤더
+
+    # 계정과목 헤더(2행 병합)
+    ws.merge_cells(start_row=h1, start_column=1, end_row=h2, end_column=1)
+    cell = ws.cell(row=h1, column=1, value="계정과목")
+    cell.fill = HEADER_FILL; cell.font = HEADER_FONT
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # 회사(병합) + 연도 헤더
+    for ci, c in enumerate(companies):
+        start = 2 + ci * per
+        for yi, y in enumerate(years):
+            yc = ws.cell(row=h2, column=start + yi, value=y)
+            yc.fill = HEADER_FILL; yc.font = HEADER_FONT
+            yc.alignment = Alignment(horizontal="center")
+        if per > 1:
+            ws.merge_cells(start_row=h1, start_column=start, end_row=h1, end_column=start + per - 1)
+        nc = ws.cell(row=h1, column=start, value=c["name"])
+        nc.fill = HEADER_FILL; nc.font = HEADER_FONT
+        nc.alignment = Alignment(horizontal="center")
+
+    # 본문
+    for i, acc in enumerate(accounts):
+        r = h2 + 1 + i
+        ws.cell(row=r, column=1, value=acc)
+        for j, (_, _, amap) in enumerate(col_specs, start=2):
+            v = amap.get(acc)
+            cell = ws.cell(row=r, column=j, value=v)
+            if isinstance(v, (int, float)):
+                cell.number_format = "#,##0"
+
+    ws.column_dimensions["A"].width = 28
+    for j in range(2, len(col_specs) + 2):
+        ws.column_dimensions[get_column_letter(j)].width = 16
+    ws.freeze_panes = ws.cell(row=h2 + 1, column=2)
 
 
 @app.route("/api/export", methods=["POST"])
 def api_export():
     data = request.get_json(force=True)
     key = resolve_key(data.get("key"))
-    year = data.get("year", "")
+    # 다중 연도(최대 5). 과거 호환: year 단일값도 허용.
+    years = data.get("years") or ([data.get("year")] if data.get("year") else [])
+    years = [str(y) for y in years if str(y).strip()][:5]
     reprt = data.get("reprt", "11011")
     fs = data.get("fs", "CFS")
     industry = data.get("industry", "")
@@ -332,6 +401,8 @@ def api_export():
 
     if not (key and companies):
         return jsonify({"ok": False, "error": "API 키와 회사를 선택하세요."}), 400
+    if not years:
+        return jsonify({"ok": False, "error": "연도를 1개 이상 선택하세요."}), 400
     if not (accounts or major or sections):
         return jsonify({"ok": False, "error": "계정과목 또는 사업보고서 내용을 하나 이상 선택하세요."}), 400
 
@@ -341,58 +412,24 @@ def api_export():
 
         # ---- 1) 계정과목 시트 (선택 시) --------------------------------
         if accounts:
-            col_data = []  # [(company_name, {account_nm: amount})]
-            for c in companies:
-                rows = dart.get_statement(key, c["corp_code"], year, reprt, fs)
-                amap = {}
-                for r in rows:
-                    nm = (r.get("account_nm") or "").strip()
-                    if nm and nm not in amap:
-                        amap[nm] = _num(r.get("thstrm_amount"))
-                col_data.append((c["name"], amap))
-
             ws = wb.active
             ws.title = "재무분석"
             first_used = True
-
-            meta = [
-                "재무분석기 · CPA KOOK",
-                f"산업군: {industry}",
-                f"사업연도: {year}   보고서: {REPRT_NAMES.get(reprt, reprt)}   구분: {FS_NAMES.get(fs, fs)}",
-                f"생성일시: {datetime.now():%Y-%m-%d %H:%M}   |   작성: CPA KOOK",
-            ]
-            for i, line in enumerate(meta, start=1):
-                ws.cell(row=i, column=1, value=line).font = Font(bold=(i == 1), size=13 if i == 1 else 10)
-
-            head_row = len(meta) + 2
-            headers = ["계정과목"] + [name for name, _ in col_data]
-            _write_header_row(ws, head_row, headers)
-            for i, acc in enumerate(accounts):
-                r = head_row + 1 + i
-                ws.cell(row=r, column=1, value=acc)
-                for j, (_, amap) in enumerate(col_data, start=2):
-                    v = amap.get(acc)
-                    cell = ws.cell(row=r, column=j, value=v)
-                    if isinstance(v, (int, float)):
-                        cell.number_format = "#,##0"
-            ws.column_dimensions["A"].width = 28
-            for col in range(2, len(headers) + 1):
-                ws.column_dimensions[get_column_letter(col)].width = 18
-            ws.freeze_panes = ws.cell(row=head_row + 1, column=2)
+            _build_accounts_sheet(ws, key, companies, years, reprt, fs, accounts, industry)
 
         # ---- 2) 정기보고서 주요정보 시트들 -----------------------------
         for mid in major:
             ws = wb.active if not first_used else wb.create_sheet()
             ws.title = _safe_sheet_title(wb, MAJOR_MAP[mid])
             first_used = True
-            _build_major_sheet(ws, key, companies, year, reprt, mid)
+            _build_major_sheet(ws, key, companies, years, reprt, mid)
 
         # ---- 3) 사업보고서 본문 섹션 시트들 (대분류별 시트) -------------
         for top, subs in sections.items():
             ws = wb.active if not first_used else wb.create_sheet()
             ws.title = _safe_sheet_title(wb, _short_top(top))
             first_used = True
-            _build_section_sheet(ws, key, companies, year, top, subs)
+            _build_section_sheet(ws, key, companies, years, top, subs)
 
     except dart.DartError as e:
         return jsonify({"ok": False, "error": f"DART: {e}"}), 400
@@ -402,7 +439,8 @@ def api_export():
     bio = io.BytesIO()
     wb.save(bio)
     bio.seek(0)
-    fname = f"재무분석_{industry}_{year}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+    yr_tag = "-".join(str(y) for y in years)
+    fname = f"재무분석_{industry}_{yr_tag}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
     return send_file(
         bio,
         as_attachment=True,

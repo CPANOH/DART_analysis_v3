@@ -33,6 +33,16 @@
     justify-content: center; font-size: 12px; font-weight: bold;
   }
   .settings { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 12px; }
+  .settings3 { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 12px; }
+  @media (max-width:640px){ .settings3 { grid-template-columns: 1fr; } }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .chip {
+    padding:6px 12px; border:1px solid var(--line); border-radius:20px; cursor:pointer;
+    font-size:13px; background:#fff; user-select:none; transition:all .1s;
+  }
+  .chip:hover { border-color:var(--brand2); }
+  .chip.on { background:var(--brand); color:#fff; border-color:var(--brand); font-weight:600; }
+  .chip.dim { opacity:.4; }
   label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   input, select {
     width: 100%; padding: 8px 10px; border: 1px solid var(--line);
@@ -114,17 +124,13 @@
   <!-- 설정 -->
   <div class="card">
     <h2>설정</h2>
-    <div class="settings">
+    <div class="settings3">
       <div>
         <label>DART OpenAPI 인증키
           <a class="help" href="https://opendart.fss.or.kr/" target="_blank">키 발급 →</a>
           <span id="keyNote" class="muted"></span>
         </label>
         <input id="apikey" type="password" placeholder="DART에서 발급받은 40자리 키">
-      </div>
-      <div>
-        <label>사업연도</label>
-        <select id="year"></select>
       </div>
       <div>
         <label>보고서</label>
@@ -142,6 +148,10 @@
           <option value="OFS">별도재무제표</option>
         </select>
       </div>
+    </div>
+    <div style="margin-top:12px">
+      <label>사업연도 <span class="muted">(최근 10개년 중 최대 5개 선택)</span> <span id="yearCount" class="count"></span></label>
+      <div id="yearChips" class="chips"></div>
     </div>
   </div>
 
@@ -218,13 +228,41 @@ function showInfo(msg){ statusBox.className="info"; statusBox.textContent=msg; }
 function clearStatus(){ statusBox.className=""; statusBox.style.display="none"; }
 const key = () => $("#apikey").value.trim();
 
-// 연도 채우기 (최근 6개년)
+// 사업연도 칩 (최근 10개년, 최대 5개 선택)
+let yearsSel = new Set();
+const MAX_YEARS = 5;
 (function(){
-  const y = new Date().getFullYear();
-  const sel = $("#year");
-  for(let i=1;i<=6;i++){ const yr=y-i; sel.add(new Option(yr, yr)); }
-  sel.value = y-1;
+  const cy = new Date().getFullYear();
+  const box = $("#yearChips");
+  for(let i=1;i<=10;i++){
+    const yr = String(cy - i);
+    const chip = document.createElement("div");
+    chip.className = "chip"; chip.textContent = yr; chip.dataset.year = yr;
+    chip.addEventListener("click", () => toggleYear(yr));
+    box.appendChild(chip);
+  }
+  toggleYear(String(cy - 1));   // 기본: 가장 최근 연도 1개 선택
 })();
+function toggleYear(yr){
+  if(yearsSel.has(yr)){ yearsSel.delete(yr); }
+  else{
+    if(yearsSel.size >= MAX_YEARS){ showInfo(`연도는 최대 ${MAX_YEARS}개까지 선택할 수 있어요.`); return; }
+    yearsSel.add(yr);
+  }
+  renderYearChips();
+}
+function renderYearChips(){
+  const full = yearsSel.size >= MAX_YEARS;
+  document.querySelectorAll('#yearChips .chip').forEach(ch => {
+    const on = yearsSel.has(ch.dataset.year);
+    ch.classList.toggle('on', on);
+    ch.classList.toggle('dim', full && !on);
+  });
+  $("#yearCount").textContent = `선택 ${yearsSel.size}/${MAX_YEARS}`;
+}
+// 선택 연도(내림차순 배열) / 대표 연도(가장 최근)
+function years(){ return [...yearsSel].sort((a, b) => b - a); }
+function primaryYear(){ return years()[0] || ""; }
 
 // 저장된 키 복원
 $("#apikey").value = localStorage.getItem("dartKey") || "";
@@ -298,13 +336,14 @@ function renderMajorGroups(groups){
 // --- 본문: 목차 불러오기 → 대분류 > 소분류 (접이식 2단계) ---
 $("#loadToc").onclick = async () => {
   if(!hasKey()) return showErr("DART API 키가 필요합니다.");
+  if(!yearsSel.size) return showErr("사업연도를 1개 이상 선택하세요.");
   const sel = selectedCompanies();
   if(!sel.length) return showErr('먼저 회사를 선택하세요. (목차는 첫 번째 선택 회사 기준으로 불러옵니다)');
   const box = $("#sectionTree");
   box.innerHTML = '<div class="muted" style="padding:8px">목차 불러오는 중… (본문을 받아오므로 잠시 걸려요)</div>';
   $("#loadToc").disabled = true;
   try{
-    const p = new URLSearchParams({key:key(), corp_code:sel[0].corp_code, year:$("#year").value});
+    const p = new URLSearchParams({key:key(), corp_code:sel[0].corp_code, year:primaryYear()});
     const r = await fetch("/api/toc?"+p);
     const j = await r.json();
     if(!j.ok){ box.innerHTML=''; return showErr(j.error); }
@@ -427,6 +466,7 @@ function selectedCompanies(){
 // 3차: 계정과목 로드
 $("#loadAccounts").onclick = async () => {
   if(!hasKey()) return showErr("DART API 키를 먼저 입력하세요.");
+  if(!yearsSel.size) return showErr("사업연도를 1개 이상 선택하세요.");
   const sel = selectedCompanies();
   if(!sel.length) return showErr("회사를 1개 이상 선택하세요.");
   clearStatus();
@@ -434,7 +474,7 @@ $("#loadAccounts").onclick = async () => {
   $("#loadAccounts").disabled = true;
   try{
     const codes = sel.map(c=>c.corp_code).join(",");
-    const p = new URLSearchParams({key:key(), corp_codes:codes, year:$("#year").value, reprt:$("#reprt").value, fs:$("#fs").value});
+    const p = new URLSearchParams({key:key(), corp_codes:codes, year:primaryYear(), reprt:$("#reprt").value, fs:$("#fs").value});
     const r = await fetch("/api/accounts?"+p);
     const j = await r.json();
     if(!j.ok) return showErr(j.error);
@@ -505,13 +545,14 @@ $("#download").onclick = async () => {
   const sel = selectedCompanies(), acc = selectedAccounts();
   const hasContent = acc.length || majorSel.size || sectionSel.size;
   if(!sel.length || !hasContent) return;
+  if(!yearsSel.size) return showErr("사업연도를 1개 이상 선택하세요.");
   clearStatus();
   if(sectionSel.size) showInfo("본문 텍스트 수집은 시간이 걸릴 수 있어요. 잠시만 기다려 주세요…");
   $("#dlSpin").parentElement.classList.add("loading");
   $("#download").disabled = true;
   try{
     const body = {
-      key:key(), year:$("#year").value, reprt:$("#reprt").value, fs:$("#fs").value,
+      key:key(), years: years(), reprt:$("#reprt").value, fs:$("#fs").value,
       industry: $("#industry").selectedOptions[0]?.text || "",
       companies: sel, accounts: acc,
       major: [...majorSel], sections: [...sectionSel.values()]
