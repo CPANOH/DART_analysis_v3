@@ -4,7 +4,7 @@
     {
       "src": "api/index.py",
       "use": "@vercel/python",
-      "config": { "includeFiles": ["templates/**", "*.py"] }
+      "config": { "includeFiles": ["templates/**", "*.py", "corp_map.json"], "maxDuration": 60 }
     }
   ],
   "routes": [

@@ -5,6 +5,7 @@
 """
 
 import io
+import os
 import re
 import json
 import time
@@ -14,6 +15,8 @@ import requests
 import xml.etree.ElementTree as ET
 
 API = "https://opendart.fss.or.kr/api"
+# 상장사 종목코드→고유번호 매핑(사전 생성). 있으면 런타임 다운로드를 건너뛴다.
+_CORP_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corp_map.json")
 
 # 캐시
 _corp_cache = {}        # key -> {stock_code: {'corp_code', 'corp_name'}}
@@ -25,9 +28,17 @@ class DartError(Exception):
 
 
 def get_corp_map(key):
-    """DART 고유번호 전체를 내려받아 종목코드 -> 정보 딕셔너리로 반환."""
+    """상장사 종목코드 -> 고유번호 매핑. 번들 파일이 있으면 그것을 쓰고,
+    없을 때만 DART에서 전체를 내려받는다(로컬 개발/최초 생성용)."""
     if key in _corp_cache:
         return _corp_cache[key]
+
+    # 사전 생성된 매핑 파일 우선 (서버리스 콜드스타트에서 20MB 다운로드 회피)
+    if os.path.exists(_CORP_MAP_FILE):
+        with open(_CORP_MAP_FILE, encoding="utf-8") as f:
+            m = json.load(f)
+        _corp_cache[key] = m
+        return m
 
     r = requests.get(f"{API}/corpCode.xml", params={"crtfc_key": key}, timeout=60)
 
