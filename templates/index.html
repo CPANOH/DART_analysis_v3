@@ -105,6 +105,10 @@
   .grpbody { padding:2px 8px 6px 26px; display:none; }
   .grphd.open + .grpbody { display:block; }
   .grpbody .opt { padding:4px 6px; }
+  .auditortbl { width:100%; border-collapse:collapse; font-size:13px; }
+  .auditortbl th, .auditortbl td { border:1px solid var(--line); padding:6px 10px; text-align:left; }
+  .auditortbl th { background:#eef3f9; color:var(--brand); font-weight:600; }
+  .auditortbl td b { color:var(--brand); }
 </style>
 </head>
 <body>
@@ -169,9 +173,11 @@
       <button id="companyAll">전체선택</button>
       <button id="companyNone">해제</button>
       <button class="primary" id="loadAccounts">계정과목 불러오기 ▶</button>
+      <button id="auditorBtn">🔍 외부감사인</button>
       <span class="spin muted" id="companySpin">불러오는 중…</span>
     </div>
     <div class="list" id="companyList"><div class="muted" style="padding:8px">먼저 산업군을 선택하세요.</div></div>
+    <div id="auditorBox" style="display:none; margin-top:10px"></div>
   </div>
 
   <!-- 3차: 계정과목 -->
@@ -467,6 +473,35 @@ $("#companyAll").onclick = () => {
   renderCompanies(); updateDownload();
 };
 $("#companyNone").onclick = () => { compSelected.clear(); renderCompanies(); updateDownload(); };
+
+// 외부감사인 확인
+$("#auditorBtn").onclick = async () => {
+  if(!hasKey()) return showErr("DART API 키가 필요합니다.");
+  if(!yearsSel.size) return showErr("사업연도를 1개 이상 선택하세요.");
+  const sel = selectedCompanies();
+  if(!sel.length) return showErr("회사를 1개 이상 선택하세요.");
+  const box = $("#auditorBox"); box.style.display = "block";
+  box.innerHTML = '<div class="muted" style="padding:6px">외부감사인 조회 중… (사업보고서를 받아오므로 잠시 걸려요)</div>';
+  $("#auditorBtn").disabled = true;
+  try{
+    const p = new URLSearchParams({key:key(), corp_codes:sel.map(c=>c.corp_code).join(","), year:primaryYear()});
+    const r = await fetch("/api/auditor?"+p);
+    const j = await r.json();
+    if(!j.ok){ box.style.display="none"; return showErr(j.error); }
+    const nameOf = {}; sel.forEach(c => nameOf[c.corp_code] = c.name);
+    let html = `<div class="grouphd">외부감사인 <span class="muted">(${primaryYear()} 사업보고서 기준)</span></div>`
+      + '<table class="auditortbl"><tr><th>회사</th><th>외부감사인</th><th>감사의견</th><th>사업연도</th></tr>';
+    j.auditors.forEach(a => {
+      const cur = a.rows && a.rows[0];
+      html += `<tr><td>${nameOf[a.corp_code]||a.corp_code}</td>` +
+        (cur ? `<td><b>${cur.auditor}</b></td><td>${cur.opinion||''}</td><td class="muted">${cur.term||''}</td>`
+             : `<td colspan="3" class="muted">조회되지 않음</td>`) + '</tr>';
+    });
+    html += '</table>';
+    box.innerHTML = html;
+  }catch(e){ box.style.display="none"; showErr("외부감사인 조회 실패: "+e); }
+  finally{ $("#auditorBtn").disabled = false; }
+};
 
 function selectedCompanies(){
   return companies.filter(c => c.in_dart && compSelected.has(c.corp_code))

@@ -385,3 +385,38 @@ def get_section_blocks(key, rcept_no, top, sub=None):
         pos = m.end()
     _add_text_blocks(blocks, frag[pos:])
     return blocks
+
+
+def get_auditor(key, rcept_no):
+    """외부감사인 정보 추출. 'V.회계감사인의 감사의견 등 > 1.외부감사에 관한 사항'의
+    감사인/감사의견 표에서 사업연도별 [{term, auditor, opinion}] 반환."""
+    blocks = get_section_blocks(key, rcept_no,
+                                "V. 회계감사인의 감사의견 등", "1. 외부감사에 관한 사항")
+    for kind, payload in blocks:
+        if kind != "table" or len(payload) < 2:
+            continue
+        header = payload[0]
+        c_term = c_aud = c_op = None
+        for i, h in enumerate(header):
+            h = h or ""
+            if c_term is None and ("사업연도" in h or "기수" in h):
+                c_term = i
+            if c_aud is None and "감사인" in h:
+                c_aud = i
+            if c_op is None and "감사의견" in h:
+                c_op = i
+        if c_aud is None or c_op is None:
+            continue
+
+        def cell(row, i):
+            return (row[i].strip() if (i is not None and i < len(row) and row[i]) else "")
+
+        out = []
+        for row in payload[1:]:
+            aud = cell(row, c_aud)
+            if aud:
+                out.append({"term": cell(row, c_term), "auditor": aud,
+                            "opinion": cell(row, c_op)})
+        if out:
+            return out
+    return []

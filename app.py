@@ -167,6 +167,29 @@ def api_toc():
         return jsonify({"ok": False, "error": f"목차 로드 실패: {e}"}), 500
 
 
+@app.route("/api/auditor")
+def api_auditor():
+    """선택 회사들의 외부감사인/감사의견을 반환."""
+    key = resolve_key(request.args.get("key"))
+    corp_codes = [c for c in request.args.get("corp_codes", "").split(",") if c]
+    year = request.args.get("year", "")
+    if not key:
+        return jsonify({"ok": False, "error": "DART API 키가 필요합니다."}), 400
+    if not corp_codes:
+        return jsonify({"ok": False, "error": "회사를 선택하세요."}), 400
+    try:
+        out = []
+        for cc in corp_codes:
+            rcept = dart.find_report_rcept(key, cc, year)
+            rows = dart.get_auditor(key, rcept) if rcept else []
+            out.append({"corp_code": cc, "rows": rows})
+        return jsonify({"ok": True, "auditors": out})
+    except dart.DartError as e:
+        return jsonify({"ok": False, "error": f"DART: {e}"}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"외부감사인 조회 실패: {e}"}), 500
+
+
 @app.route("/api/industries")
 def api_industries():
     try:
