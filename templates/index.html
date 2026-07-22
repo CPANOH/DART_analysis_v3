@@ -218,6 +218,11 @@
       <span><b>분석지표 시트 추가</b> — 매출·원가·이익률, 영업레버리지, CAPEX/매출, 재고회전율·회전기간, 단순 FCF 등을
       회사×연도로 <b>자동 계산</b>합니다. (계정과목을 고르지 않아도 이것만으로 다운로드 가능)</span>
     </label>
+    <label class="opt" style="font-size:13px; align-items:flex-start; margin-left:24px">
+      <input type="checkbox" id="metricsDaChk" style="margin-top:3px">
+      <span>＋ <b>매출원가 중 감가상각비·무형상각 비중</b> — 주석(비용의 성격별 분류 − 판매관리비)에서
+      제품원가에 실린 D&amp;A를 추정해 매출원가 대비 비중까지 계산 <span class="muted">(주석 파싱 · 다소 느림)</span></span>
+    </label>
   </div>
 
   <!-- 다운로드 -->
@@ -581,9 +586,11 @@ $("#accountNone").onclick = () => { filteredAccounts().forEach(a => accSelected.
 
 function selectedAccounts(){ return [...accSelected]; }
 const metricsOn = () => $("#metricsChk").checked;
+const metricsDaOn = () => $("#metricsDaChk").checked;
 $("#metricsChk").addEventListener("change", updateDownload);
+$("#metricsDaChk").addEventListener("change", () => { if(metricsDaOn()) $("#metricsChk").checked = true; updateDownload(); });
 function updateDownload(){
-  const hasContent = selectedAccounts().length || majorSel.size || sectionSel.size || metricsOn();
+  const hasContent = selectedAccounts().length || majorSel.size || sectionSel.size || metricsOn() || metricsDaOn();
   $("#download").disabled = !(selectedCompanies().length && hasContent);
 }
 
@@ -603,7 +610,7 @@ $("#download").onclick = async () => {
       industry: $("#industry").selectedOptions[0]?.text || "",
       companies: sel, accounts: acc,
       major: [...majorSel], sections: [...sectionSel.values()],
-      metrics: metricsOn()
+      metrics: metricsOn(), metrics_da: metricsDaOn()
     };
     const r = await fetch("/api/export", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
     if(!r.ok){ const j = await r.json().catch(()=>({error:"다운로드 실패"})); return showErr(j.error); }

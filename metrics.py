@@ -99,15 +99,116 @@ METRIC_DEFS = [
 ]
 
 
-def compute_metrics(key, corp_code, years, reprt, fs):
+# --- 주석 기반: 매출원가에 포함된 감가상각비·무형자산상각비(추정) ---
+
+def _first_num(cells):
+    """행에서 첫 숫자값(=당기). 구형 보고서는 한 표에 당기·전기가 나란히 있어 첫 값이 당기."""
+    for c in cells:
+        v = _num(c)
+        if v is not None:
+            return v
+    return None
+
+
+def _table_da(table):
+    """표에서 감가상각비+무형자산상각비 행의 당기값 합계(백만원)."""
+    total, found = 0.0, False
+    for row in table[1:]:
+        lab = row[0] or ""
+        if ("감가상각" in lab) or ("무형자산상각" in lab):
+            v = _first_num(row[1:])
+            if v is not None:
+                total += v
+                found = True
+    return total if found else None
+
+
+def _da_from_first_table(key, rcept, top, sub):
+    """주석 소분류의 (당기) 표에서 D&A 합계(백만원)."""
+    for kind, payload in dart.get_section_blocks(key, rcept, top, sub):
+        if kind == "table" and len(payload) >= 2:
+            da = _table_da(payload)
+            if da is not None:
+                return da
+    return None
+
+
+def _find_note(subs, keyword, consolidated):
+    cands = [s for s in subs if keyword in s]
+    if not cands:
+        return None
+    pref = [s for s in cands if (("(연결)" in s) == consolidated)]
+    return (pref or cands)[0]
+
+
+def _da_from_notes_scan(key, rcept, top, notes_sub):
+    """구형 보고서(개별 주석 TITLE 없음): 주석 섹션 전체 표에서 성격별/판관비 표를 찾아 D&A 추출."""
+    tables = [p for k, p in dart.get_section_blocks(key, rcept, top, notes_sub)
+              if k == "table" and len(p) >= 2]
+    nature = sga = None
+    for t in tables:
+        labels = [(r[0] or "") for r in t]
+        j = " ".join(labels)
+        if nature is None and (("감가상각비 등" in j) or
+                               ("원재료" in j and "종업원급여" in j and any("감가상각" in l for l in labels))):
+            nature = _table_da(t)
+        if sga is None and ("무형자산상각비" in j) and any("감가상각비" in l for l in labels):
+            sga = _table_da(t)
+    return nature, sga
+
+
+def cogs_da_won(key, corp_code, year, reprt, fs):
+    """당기 매출원가(제품원가)에 실린 감가상각비·무형상각(추정, 원).
+    = 비용의 성격별 분류 D&A − 판매비와관리비 D&A."""
+    rcept = dart.find_report_rcept(key, corp_code, year)
+    if not rcept:
+        return None
+    toc = dart.get_report_toc(key, rcept)
+    fin = next((g for g in toc if "재무에 관한" in g["top"]), None)
+    if not fin:
+        return None
+    top, subs, consol = fin["top"], fin["subs"], (fs == "CFS")
+
+    # 1) 개별 주석 TITLE 방식(신형 보고서, 2023~)
+    n_nat = _find_note(subs, "비용의 성격별 분류", consol)
+    n_sga = _find_note(subs, "판매비와관리비", consol)
+    nature = _da_from_first_table(key, rcept, top, n_nat) if n_nat else None
+    sga = _da_from_first_table(key, rcept, top, n_sga) if n_sga else None
+
+    # 2) 폴백: 주석 섹션 전체 스캔(구형 보고서, ~2022)
+    if nature is None or sga is None:
+        notes_sub = _find_note(subs, "재무제표 주석", consol)
+        if notes_sub:
+            f_nat, f_sga = _da_from_notes_scan(key, rcept, top, notes_sub)
+            nature = nature if nature is not None else f_nat
+            sga = sga if sga is not None else f_sga
+
+    if nature is None or sga is None:
+        return None
+    return (nature - sga) * 1_000_000        # 주석은 백만원 → 원으로 통일
+
+
+def _make_row(label, kind, values, years_sorted):
+    """연도별 값 + 전년比(금액=증감률, 그외=차이) 계산."""
+    changes = {}
+    for i in range(1, len(years_sorted)):
+        y, py = years_sorted[i], years_sorted[i - 1]
+        cur, prev = values.get(y), values.get(py)
+        if cur is None or prev is None:
+            changes[y] = None
+        elif kind == "amount":
+            changes[y] = (cur - prev) / abs(prev) if prev != 0 else None
+        else:
+            changes[y] = cur - prev
+    return {"label": label, "kind": kind, "values": values, "changes": changes}
+
+
+def compute_metrics(key, corp_code, years, reprt, fs, deep=False):
     """회사 1개에 대해 연도별 지표 + 연도마다 전년比 계산.
-    반환: {'years':[...오래된→최근...], 'rows':[{label, kind, values:{year:val}, changes:{year:전년比}}]}
-    changes: 금액지표는 증감률(비율), 비율/회전/일수 지표는 전년과의 차이(Δ)."""
+    deep=True면 주석 기반 '매출원가 중 D&A 비중' 지표까지 추가(문서 파싱, 느림)."""
     years_sorted = sorted(str(y) for y in years)          # 오래된→최근 (왼→오)
-    base_by_year = {}
-    for y in years_sorted:
-        rows = dart.get_statement(key, corp_code, y, reprt, fs)
-        base_by_year[y] = _base_values(rows)
+    base_by_year = {y: _base_values(dart.get_statement(key, corp_code, y, reprt, fs))
+                    for y in years_sorted}
 
     out_rows = []
     for label, kind, fn in METRIC_DEFS:
@@ -115,15 +216,16 @@ def compute_metrics(key, corp_code, years, reprt, fs):
             out_rows.append({"label": "", "kind": "sep", "values": {}, "changes": {}})
             continue
         values = {y: fn(base_by_year[y]) for y in years_sorted}
-        changes = {}
-        for i in range(1, len(years_sorted)):
-            y, py = years_sorted[i], years_sorted[i - 1]
-            cur, prev = values[y], values[py]
-            if cur is None or prev is None:
-                changes[y] = None
-            elif kind == "amount":
-                changes[y] = (cur - prev) / abs(prev) if prev != 0 else None
-            else:                                   # 비율/회전/일수 → 전년과의 차이
-                changes[y] = cur - prev
-        out_rows.append({"label": label, "kind": kind, "values": values, "changes": changes})
+        out_rows.append(_make_row(label, kind, values, years_sorted))
+
+    if deep:
+        out_rows.append({"label": "", "kind": "sep", "values": {}, "changes": {}})
+        da = {y: cogs_da_won(key, corp_code, y, reprt, fs) for y in years_sorted}
+        out_rows.append(_make_row("매출원가 감가상각비·무형상각(추정)", "amount", da, years_sorted))
+        ratio = {}
+        for y in years_sorted:
+            cogs = base_by_year[y]["cogs"]
+            ratio[y] = (da[y] / cogs) if (da[y] is not None and cogs) else None
+        out_rows.append(_make_row("매출원가 중 D&A 비중", "pct", ratio, years_sorted))
+
     return {"years": years_sorted, "rows": out_rows}

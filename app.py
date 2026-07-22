@@ -483,12 +483,13 @@ def _change_numfmt(kind):
     return "+0.00;-0.00"
 
 
-def _build_metrics_sheet(ws, key, companies, years, reprt, fs):
-    """반도체 분석 세트: 회사×연도 지표 자동계산 + 연도마다 전년比."""
+def _build_metrics_sheet(ws, key, companies, years, reprt, fs, deep=False):
+    """반도체 분석 세트: 회사×연도 지표 자동계산 + 연도마다 전년比.
+    deep=True면 주석 기반 '매출원가 중 D&A 비중'까지 포함."""
     ncol = 1
     r = 1
     for c in companies:
-        data = metrics.compute_metrics(key, c["corp_code"], years, reprt, fs)
+        data = metrics.compute_metrics(key, c["corp_code"], years, reprt, fs, deep=deep)
         ys = data["years"]
         # 헤더: 지표 | y0 | y1 | 전년比 | y2 | 전년比 ...
         headers, change_cols = ["지표"], set()
@@ -548,7 +549,8 @@ def api_export():
     industry = data.get("industry", "")
     companies = data.get("companies", [])   # [{name, corp_code}]
     accounts = data.get("accounts", [])     # [account_nm, ...]
-    metrics_on = bool(data.get("metrics"))   # 분석지표(반도체 세트) 시트 포함 여부
+    metrics_on = bool(data.get("metrics"))       # 분석지표(반도체 세트) 시트 포함 여부
+    metrics_da = bool(data.get("metrics_da"))     # 매출원가 중 D&A 비중(주석 기반) 추가
     # 플러스알파(선택): 사업보고서 내용
     major = [m for m in data.get("major", []) if m in MAJOR_MAP]   # 주요정보 endpoint id
     # 본문 섹션: [{top, sub}] -> 대분류별로 소분류 묶기
@@ -567,7 +569,7 @@ def api_export():
         return jsonify({"ok": False, "error": "API 키와 회사를 선택하세요."}), 400
     if not years:
         return jsonify({"ok": False, "error": "연도를 1개 이상 선택하세요."}), 400
-    if not (metrics_on or accounts or major or sections):
+    if not (metrics_on or metrics_da or accounts or major or sections):
         return jsonify({"ok": False, "error": "분석지표·계정과목·사업보고서 내용 중 하나 이상 선택하세요."}), 400
 
     try:
@@ -575,11 +577,11 @@ def api_export():
         first_used = False
 
         # ---- 0) 분석지표 시트 (반도체 세트) -----------------------------
-        if metrics_on:
+        if metrics_on or metrics_da:
             ws = wb.active
             ws.title = "분석지표"
             first_used = True
-            _build_metrics_sheet(ws, key, companies, years, reprt, fs)
+            _build_metrics_sheet(ws, key, companies, years, reprt, fs, deep=metrics_da)
 
         # ---- 1) 계정과목 시트 (선택 시) --------------------------------
         if accounts:
