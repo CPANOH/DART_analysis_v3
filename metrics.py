@@ -157,16 +157,16 @@ def _da_from_notes_scan(key, rcept, top, notes_sub):
     return nature, sga
 
 
-def cogs_da_won(key, corp_code, year, reprt, fs):
-    """당기 매출원가(제품원가)에 실린 감가상각비·무형상각(추정, 원).
-    = 비용의 성격별 분류 D&A − 판매비와관리비 D&A."""
+def da_breakdown(key, corp_code, year, reprt, fs):
+    """당기 D&A(감가상각비+무형자산상각비) 분해. 반환: (전체D&A원, 판관비D&A원) or (None,None).
+    전체 = 비용의 성격별 분류, 판관비 = 판매비와관리비 주석. 매출원가D&A = 전체 − 판관비."""
     rcept = dart.find_report_rcept(key, corp_code, year)
     if not rcept:
-        return None
+        return None, None
     toc = dart.get_report_toc(key, rcept)
     fin = next((g for g in toc if "재무에 관한" in g["top"]), None)
     if not fin:
-        return None
+        return None, None
     top, subs, consol = fin["top"], fin["subs"], (fs == "CFS")
 
     # 1) 개별 주석 TITLE 방식(신형 보고서, 2023~)
@@ -183,9 +183,9 @@ def cogs_da_won(key, corp_code, year, reprt, fs):
             nature = nature if nature is not None else f_nat
             sga = sga if sga is not None else f_sga
 
-    if nature is None or sga is None:
-        return None
-    return (nature - sga) * 1_000_000        # 주석은 백만원 → 원으로 통일
+    tot = nature * 1_000_000 if nature is not None else None   # 백만원 → 원
+    sg = sga * 1_000_000 if sga is not None else None
+    return tot, sg
 
 
 def _make_row(label, kind, values, years_sorted):
@@ -220,12 +220,31 @@ def compute_metrics(key, corp_code, years, reprt, fs, deep=False):
 
     if deep:
         out_rows.append({"label": "", "kind": "sep", "values": {}, "changes": {}})
-        da = {y: cogs_da_won(key, corp_code, y, reprt, fs) for y in years_sorted}
-        out_rows.append(_make_row("매출원가 감가상각비·무형상각(추정)", "amount", da, years_sorted))
-        ratio = {}
+        tot = {}      # 전체 D&A(원)
+        sga = {}      # 판관비 D&A(원)
         for y in years_sorted:
-            cogs = base_by_year[y]["cogs"]
-            ratio[y] = (da[y] / cogs) if (da[y] is not None and cogs) else None
-        out_rows.append(_make_row("매출원가 중 D&A 비중", "pct", ratio, years_sorted))
+            tot[y], sga[y] = da_breakdown(key, corp_code, y, reprt, fs)
+        cogs_da = {y: (tot[y] - sga[y]) if (tot[y] is not None and sga[y] is not None) else None
+                   for y in years_sorted}
+
+        def _ratio(num, den):
+            return {y: (num[y] / den[y]) if (num[y] is not None and den[y]) else None
+                    for y in years_sorted}
+
+        cogs_base = {y: base_by_year[y]["cogs"] for y in years_sorted}
+        sga_base = {y: base_by_year[y]["sga"] for y in years_sorted}
+        total_cost = {y: (cogs_base[y] + sga_base[y])
+                      if (cogs_base[y] is not None and sga_base[y] is not None) else None
+                      for y in years_sorted}
+
+        # 매출원가
+        out_rows.append(_make_row("매출원가 감가상각비·무형상각(추정)", "amount", cogs_da, years_sorted))
+        out_rows.append(_make_row("매출원가 중 D&A 비중", "pct", _ratio(cogs_da, cogs_base), years_sorted))
+        # 판관비
+        out_rows.append(_make_row("판관비 감가상각비·무형상각", "amount", sga, years_sorted))
+        out_rows.append(_make_row("판관비 중 D&A 비중", "pct", _ratio(sga, sga_base), years_sorted))
+        # 전체 원가
+        out_rows.append(_make_row("전체 감가상각비·무형상각(성격별)", "amount", tot, years_sorted))
+        out_rows.append(_make_row("전체 원가 중 D&A 비중", "pct", _ratio(tot, total_cost), years_sorted))
 
     return {"years": years_sorted, "rows": out_rows}
