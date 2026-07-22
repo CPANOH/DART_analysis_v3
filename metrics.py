@@ -100,8 +100,9 @@ METRIC_DEFS = [
 
 
 def compute_metrics(key, corp_code, years, reprt, fs):
-    """회사 1개에 대해 연도별 지표 계산.
-    반환: {'years':[...정렬...], 'rows':[{label, kind, values:{year:val}, delta, delta_pct}]}"""
+    """회사 1개에 대해 연도별 지표 + 연도마다 전년比 계산.
+    반환: {'years':[...오래된→최근...], 'rows':[{label, kind, values:{year:val}, changes:{year:전년比}}]}
+    changes: 금액지표는 증감률(비율), 비율/회전/일수 지표는 전년과의 차이(Δ)."""
     years_sorted = sorted(str(y) for y in years)          # 오래된→최근 (왼→오)
     base_by_year = {}
     for y in years_sorted:
@@ -111,16 +112,18 @@ def compute_metrics(key, corp_code, years, reprt, fs):
     out_rows = []
     for label, kind, fn in METRIC_DEFS:
         if kind == "sep":
-            out_rows.append({"label": "", "kind": "sep", "values": {}, "delta": None, "delta_pct": None})
+            out_rows.append({"label": "", "kind": "sep", "values": {}, "changes": {}})
             continue
         values = {y: fn(base_by_year[y]) for y in years_sorted}
-        delta = delta_pct = None
-        if len(years_sorted) >= 2:
-            cur, prev = values[years_sorted[-1]], values[years_sorted[-2]]
-            if cur is not None and prev is not None:
-                delta = cur - prev
-                if kind == "amount" and prev != 0:
-                    delta_pct = (cur - prev) / abs(prev)
-        out_rows.append({"label": label, "kind": kind, "values": values,
-                         "delta": delta, "delta_pct": delta_pct})
+        changes = {}
+        for i in range(1, len(years_sorted)):
+            y, py = years_sorted[i], years_sorted[i - 1]
+            cur, prev = values[y], values[py]
+            if cur is None or prev is None:
+                changes[y] = None
+            elif kind == "amount":
+                changes[y] = (cur - prev) / abs(prev) if prev != 0 else None
+            else:                                   # 비율/회전/일수 → 전년과의 차이
+                changes[y] = cur - prev
+        out_rows.append({"label": label, "kind": kind, "values": values, "changes": changes})
     return {"years": years_sorted, "rows": out_rows}

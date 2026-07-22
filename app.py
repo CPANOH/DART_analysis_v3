@@ -451,23 +451,41 @@ def _metric_numfmt(kind):
     return {"amount": "#,##0", "pct": "0.0%", "days": '0"일"'}.get(kind, "0.00")
 
 
+def _change_numfmt(kind):
+    """전년比 서식: 금액=증감률(%), 비율=%p, 회전=배수, 일수=일."""
+    if kind in ("amount", "pct"):
+        return "+0.0%;-0.0%"
+    if kind == "days":
+        return '+0"일";-0"일"'
+    return "+0.00;-0.00"
+
+
 def _build_metrics_sheet(ws, key, companies, years, reprt, fs):
-    """반도체 분석 세트: 회사×연도 지표 자동계산 시트."""
+    """반도체 분석 세트: 회사×연도 지표 자동계산 + 연도마다 전년比."""
+    ncol = 1
     r = 1
     for c in companies:
         data = metrics.compute_metrics(key, c["corp_code"], years, reprt, fs)
         ys = data["years"]
-        ncol = 1 + len(ys) + 2   # 지표 + 연도들 + 증감 + 증감률
+        # 헤더: 지표 | y0 | y1 | 전년比 | y2 | 전년比 ...
+        headers, change_cols = ["지표"], set()
+        for i, y in enumerate(ys):
+            headers.append(str(y))
+            if i > 0:
+                headers.append("전년比")
+                change_cols.add(len(headers))   # 1-based 열 번호
+        ncol = len(headers)
 
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
-        hc = ws.cell(row=r, column=1, value=f'{c["name"]}  ·  분석지표  (금액 단위: 백만원)')
+        hc = ws.cell(row=r, column=1,
+                     value=f'{c["name"]}  ·  분석지표  (금액 백만원 · 전년比: 금액=증감률, 비율=%p차이)')
         hc.fill = HEADER_FILL
         hc.font = HEADER_FONT
         hc.alignment = Alignment(vertical="center")
         ws.row_dimensions[r].height = 20
         r += 1
 
-        _write_header_row(ws, r, ["지표"] + [str(y) for y in ys] + ["증감(최근)", "증감률"])
+        _write_header_row(ws, r, headers)
         r += 1
 
         for row in data["rows"]:
@@ -476,21 +494,23 @@ def _build_metrics_sheet(ws, key, companies, years, reprt, fs):
                 continue
             kind = row["kind"]
             ws.cell(row=r, column=1, value=row["label"])
-            for j, y in enumerate(ys, start=2):
-                cell = ws.cell(row=r, column=j, value=_metric_cellval(row["values"].get(y), kind))
+            col = 2
+            for i, y in enumerate(ys):
+                cell = ws.cell(row=r, column=col, value=_metric_cellval(row["values"].get(y), kind))
                 cell.number_format = _metric_numfmt(kind)
-            dcell = ws.cell(row=r, column=2 + len(ys), value=_metric_cellval(row["delta"], kind))
-            dcell.number_format = _metric_numfmt(kind)
-            if row["delta_pct"] is not None:
-                pc = ws.cell(row=r, column=3 + len(ys), value=row["delta_pct"])
-                pc.number_format = "0.0%"
+                col += 1
+                if i > 0:                          # 이 연도의 전년比
+                    ch = ws.cell(row=r, column=col, value=row["changes"].get(y))
+                    ch.number_format = _change_numfmt(kind)
+                    ch.font = Font(size=10, color="6B7684")
+                    col += 1
             r += 1
         r += 1   # 회사 간 빈 줄
 
     ws.column_dimensions["A"].width = 26
-    for j in range(2, 2 + len(years) + 2):
-        ws.column_dimensions[get_column_letter(j)].width = 14
-    ws.freeze_panes = "B3"
+    for j in range(2, ncol + 1):
+        ws.column_dimensions[get_column_letter(j)].width = 11 if j in change_cols else 14
+    ws.freeze_panes = "B1"
 
 
 @app.route("/api/export", methods=["POST"])
