@@ -251,6 +251,11 @@ _RE_TOP = re.compile(r"^[IVXLC]+\.")        # 대분류: 로마숫자.
 _RE_SUB = re.compile(r"^\d+(-\d+)?\.")      # 소분류: 숫자. / 숫자-숫자.
 
 
+def _is_top(t):
+    """대분류 여부: 로마숫자 시작 또는 【 대표이사/전문가 확인 】 같은 괄호 제목."""
+    return bool(_RE_TOP.match(t)) or t.strip().startswith("【")
+
+
 def _load_doc(key, rcept_no):
     """사업보고서 원본 XML과 TITLE(목차) 위치 목록을 읽어 캐시."""
     ck = (key, rcept_no)
@@ -274,16 +279,16 @@ def _load_doc(key, rcept_no):
 
 
 def get_report_toc(key, rcept_no):
-    """사업보고서 목차를 대분류>소분류 트리로 반환.
-    재무제표(계정과목으로 이미 다룸)와 상세표는 제외. [{'top':..., 'subs':[...]}]"""
+    """사업보고서 전체 목차를 대분류>소분류 트리로 반환(모든 섹션 포함).
+    회사의 개요 ~ 재무에 관한 사항(주석 포함) ~ 상세표 ~ 전문가의 확인까지."""
     _, titles = _load_doc(key, rcept_no)
     toc, cur = [], None
     for (s, e, t) in titles:
-        if _RE_TOP.match(t):
-            skip = ("재무에 관한" in t) or ("상세표" in t)
-            cur = None if skip else {"top": t, "subs": []}
-            if cur is not None:
-                toc.append(cur)
+        if not t or t in ("목 차", "목차"):
+            continue
+        if _is_top(t):
+            cur = {"top": t, "subs": []}
+            toc.append(cur)
         elif _RE_SUB.match(t) and cur is not None:
             if t not in cur["subs"]:
                 cur["subs"].append(t)
@@ -312,7 +317,7 @@ def _section_slice(key, rcept_no, top, sub=None):
     top_start = titles[ti][1]
     top_end = len(xml)                       # 다음 대분류 전까지가 이 대분류 범위
     for j in range(ti + 1, len(titles)):
-        if _RE_TOP.match(titles[j][2]):
+        if _is_top(titles[j][2]):
             top_end = titles[j][0]
             break
 

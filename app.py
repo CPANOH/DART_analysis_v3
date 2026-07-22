@@ -284,8 +284,10 @@ def _build_major_sheet(ws, key, companies, years, reprt, endpoint):
 
 
 def _short_top(top):
-    """대분류 제목에서 로마숫자 접두어 제거 ('II. 사업의 내용' -> '사업의 내용')."""
-    return re.sub(r"^[IVXLC]+\.\s*", "", top).strip() or top
+    """대분류 제목에서 로마숫자 접두어/괄호 제거 ('II. 사업의 내용' -> '사업의 내용')."""
+    s = re.sub(r"^[IVXLC]+\.\s*", "", top)
+    s = s.replace("【", "").replace("】", "").strip()
+    return s or top
 
 
 SECTION_SPAN = 14          # 문단 셀 병합 너비(열 수)
