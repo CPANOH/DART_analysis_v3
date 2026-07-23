@@ -256,6 +256,21 @@ def _is_top(t):
     return bool(_RE_TOP.match(t)) or t.strip().startswith("【")
 
 
+def _decode_doc(raw):
+    """DART 문서 디코딩. 선언(utf-8)이 틀린 구형 EUC-KR 문서가 있어 내용으로 판별."""
+    for enc in ("utf-8", "cp949"):
+        try:
+            s = raw.decode(enc)
+            if "재무" in s or "회사" in s:
+                return s
+        except UnicodeDecodeError:
+            pass
+    a = raw.decode("utf-8", "ignore")
+    b = raw.decode("cp949", "ignore")
+    score = lambda s: s.count("재무") + s.count("회사") + s.count("합계")
+    return b if score(b) > score(a) else a
+
+
 def _load_doc(key, rcept_no):
     """사업보고서 원본 XML과 TITLE(목차) 위치 목록을 읽어 캐시."""
     ck = (key, rcept_no)
@@ -270,7 +285,7 @@ def _load_doc(key, rcept_no):
 
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     main = max(zf.namelist(), key=lambda n: zf.getinfo(n).file_size)  # 본문 = 최대 파일
-    xml = zf.read(main).decode("utf-8", "ignore")
+    xml = _decode_doc(zf.read(main))
     titles = [(m.start(), m.end(), _strip(m.group(1)))
               for m in re.finditer(r"<TITLE[^>]*>(.*?)</TITLE>", xml, re.S)]
     titles = [(s, e, t) for (s, e, t) in titles if t]

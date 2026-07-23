@@ -198,29 +198,70 @@ def da_breakdown(key, corp_code, year, reprt, fs):
     return tot, sg
 
 
-def _pick_table(key, rcept, top, sub, keys):
-    """sub의 표들 중, 라벨에 keys 중 하나라도 포함하는 (당기) 첫 표."""
+def _row_label_val(row):
+    """행에서 (라벨, 당기값). 라벨=앞쪽 비숫자 셀들 결합(중첩표 대응), 값=첫 숫자셀(당기)."""
+    parts, val = [], None
+    for c in row:
+        n = _num(c)
+        if n is None:
+            if c and str(c).strip():
+                parts.append(str(c).strip())
+        else:
+            val = n
+            break
+    return " ".join(parts), val
+
+
+def _has(label, keywords):
+    """공백 무시하고 label에 keywords 중 하나라도 포함되는지('합 계'='합계', '인건비(*1)' 등 대응)."""
+    nl = (label or "").replace(" ", "")
+    return any(k.replace(" ", "") in nl for k in keywords)
+
+
+def _table_labels(t):
+    return " ".join(_row_label_val(r)[0] for r in t)
+
+
+def _pick_nature_table(key, rcept, top, sub):
+    """성격별 비용 표: 노무 키워드와 감가상각 키워드를 함께 가진 (당기) 첫 표."""
     for k, p in dart.get_section_blocks(key, rcept, top, sub):
-        if k == "table" and len(p) >= 2:
-            labs = " ".join((r[0] or "") for r in p)
-            if any(kw in labs for kw in keys):
+        if k == "table" and len(p) >= 3:
+            labs = _table_labels(p)
+            if _has(labs, _LABOR_KW) and _has(labs, _DA_KW):
                 return p
     return None
 
 
+def _pick_table_with(key, rcept, top, sub, anykw):
+    """sub의 표 중 라벨에 anykw 중 하나라도 있는 (당기) 첫 표(>=3행)."""
+    for k, p in dart.get_section_blocks(key, rcept, top, sub):
+        if k == "table" and len(p) >= 3 and _has(_table_labels(p), anykw):
+            return p
+    return None
+
+
 def _rowsum(table, include, exclude=()):
-    """표에서 label이 include 중 하나 포함(exclude 제외) 행들의 당기값 합계(백만원)."""
+    """표에서 라벨이 include 중 하나 포함(exclude 제외) 행들의 당기값 합계(백만원).
+    라벨은 여러 열에서 읽고(중첩표 대응) 값은 첫 숫자(당기)."""
     if not table:
         return None
     tot, found = 0.0, False
     for row in table[1:]:
-        lab = row[0] or ""
-        if any(k in lab for k in include) and not any(x in lab for x in exclude):
-            v = _first_num(row[1:])
-            if v is not None:
-                tot += v
-                found = True
+        lab, v = _row_label_val(row)
+        if v is None:
+            continue
+        if _has(lab, include) and not _has(lab, exclude):
+            tot += v
+            found = True
     return tot if found else None
+
+
+# 원가 성격별 라벨 변형(회사·업종마다 다름)
+_MAT_KW = ("원재료", "재료비", "원자재", "부재료", "재고자산 매입", "재고자산매입",
+           "재고자산의 매입", "상품매입", "매입액")
+_LABOR_KW = ("종업원급여", "인건비", "노무비", "급여")
+_DA_KW = ("감가상각", "무형자산상각", "무형상각")
+_LABOR_SGA_KW = ("급여", "상여", "퇴직", "복리후생", "인건비", "노무")
 
 
 def cost_breakdown(key, corp_code, year, reprt, fs):
@@ -236,21 +277,23 @@ def cost_breakdown(key, corp_code, year, reprt, fs):
         return None
     top, subs, consol = fin["top"], fin["subs"], (fs == "CFS")
 
-    n_nat = _find_note(subs, "비용의 성격별 분류", consol) or _find_note(subs, "성격별 비용", consol)
-    n_sga = _find_note(subs, "판매비와관리비", consol)
-    nat_t = _pick_table(key, rcept, top, n_nat, ("원재료", "종업원급여", "감가상각비 등")) if n_nat else None
-    sga_t = _pick_table(key, rcept, top, n_sga, ("무형자산상각비", "감가상각비")) if n_sga else None
+    n_nat = (_find_note(subs, "비용의 성격별 분류", consol) or _find_note(subs, "성격별 비용", consol)
+             or _find_note(subs, "성격별", consol))
+    n_sga = _find_note(subs, "판매비와관리비", consol) or _find_note(subs, "판매비", consol)
+    nat_t = _pick_nature_table(key, rcept, top, n_nat) if n_nat else None
+    sga_t = _pick_table_with(key, rcept, top, n_sga, _DA_KW) if n_sga else None
 
     # 폴백: 구형 보고서(개별 주석 TITLE 없음) — 주석 섹션 전체 표 스캔
     if nat_t is None or sga_t is None:
         notes_sub = _find_note(subs, "재무제표 주석", consol)
         if notes_sub:
-            for t in [p for k, p in dart.get_section_blocks(key, rcept, top, notes_sub)
-                      if k == "table" and len(p) >= 2]:
-                j = " ".join((r[0] or "") for r in t)
-                if nat_t is None and (("원재료" in j and "종업원급여" in j) or "감가상각비 등" in j):
+            tables = [p for k, p in dart.get_section_blocks(key, rcept, top, notes_sub)
+                      if k == "table" and len(p) >= 3]
+            for t in tables:
+                labs = _table_labels(t)
+                if nat_t is None and _has(labs, ("합계",)) and _has(labs, _MAT_KW) and _has(labs, _LABOR_KW):
                     nat_t = t
-                if sga_t is None and ("무형자산상각비" in j) and ("급여" in j):
+                if sga_t is None and _has(labs, _DA_KW) and _has(labs, ("판매비", "판관비", "급여", "무형자산상각")):
                     sga_t = t
 
     if nat_t is None:
@@ -261,11 +304,11 @@ def cost_breakdown(key, corp_code, year, reprt, fs):
 
     return {
         "total": M(_rowsum(nat_t, ("합계",), exclude=("소계",))),
-        "material": M(_rowsum(nat_t, ("원재료",))),
-        "labor": M(_rowsum(nat_t, ("종업원급여", "종업원 급여"))),
-        "da_total": M(_rowsum(nat_t, ("감가상각", "무형자산상각"))),
-        "labor_sga": M(_rowsum(sga_t, ("급여", "복리후생"))) if sga_t else None,
-        "da_sga": M(_rowsum(sga_t, ("감가상각", "무형자산상각"))) if sga_t else None,
+        "material": M(_rowsum(nat_t, _MAT_KW)),
+        "labor": M(_rowsum(nat_t, _LABOR_KW)),
+        "da_total": M(_rowsum(nat_t, _DA_KW)),
+        "labor_sga": M(_rowsum(sga_t, _LABOR_SGA_KW)) if sga_t else None,
+        "da_sga": M(_rowsum(sga_t, _DA_KW)) if sga_t else None,
     }
 
 
