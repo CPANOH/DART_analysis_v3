@@ -23,20 +23,21 @@ def _num(s):
     return -v if neg else v
 
 
-def _find(rows, ids=(), sj=None, name_contains=()):
-    """account_id 우선, 없으면 (해당 재무제표 내) 계정명 부분일치로 값 찾기."""
+def _find(rows, ids=(), sj=None, name_contains=(), field="thstrm_amount"):
+    """account_id 우선, 없으면 (해당 재무제표 내) 계정명 부분일치로 값 찾기.
+    field='frmtrm_amount'면 전기값을 반환."""
     for r in rows:
         if sj and r.get("sj_div") != sj:
             continue
         if r.get("account_id") in ids:
-            return _num(r.get("thstrm_amount"))
+            return _num(r.get(field))
     if name_contains:
         for r in rows:
             if sj and r.get("sj_div") != sj:
                 continue
             nm = r.get("account_nm") or ""
             if any(k in nm for k in name_contains):
-                return _num(r.get("thstrm_amount"))
+                return _num(r.get(field))
     return None
 
 
@@ -55,6 +56,7 @@ def _base_values(rows):
                ("영업이익",))
     ni = _find(rows, {"ifrs-full_ProfitLoss"}, None, ("당기순이익",))
     ppe = _find(rows, {"ifrs-full_PropertyPlantAndEquipment"}, "BS", ("유형자산",))
+    ppe_prev = _find(rows, {"ifrs-full_PropertyPlantAndEquipment"}, "BS", ("유형자산",), field="frmtrm_amount")
     inv = _find(rows, {"ifrs-full_Inventories"}, "BS", ("재고자산",))
     ocf = _find(rows, {"ifrs-full_CashFlowsFromUsedInOperatingActivities"}, "CF",
                 ("영업활동 현금흐름", "영업활동현금흐름", "영업활동으로"))
@@ -64,8 +66,9 @@ def _base_values(rows):
                       "CF", ("무형자산의 취득", "무형자산 취득", "무형자산의취득"))
     # 총 CAPEX = 유형 + 무형(있으면). 유형이 없으면 총도 None.
     capex_total = None if capex is None else capex + (capex_int or 0)
+    ppe_chg = (ppe - ppe_prev) if (ppe is not None and ppe_prev is not None) else None
     return {"rev": rev, "cogs": cogs, "gp": gp, "sga": sga, "op": op, "ni": ni,
-            "ppe": ppe, "inv": inv, "ocf": ocf,
+            "ppe": ppe, "ppe_prev": ppe_prev, "ppe_chg": ppe_chg, "inv": inv, "ocf": ocf,
             "capex": capex, "capex_int": capex_int, "capex_total": capex_total}
 
 
@@ -195,6 +198,32 @@ def da_breakdown(key, corp_code, year, reprt, fs):
     return tot, sg
 
 
+def ppe_depreciation(key, corp_code, year, reprt, fs):
+    """유형자산 주석(롤포워드)의 당기 감가상각비(원). 무형상각·감가상각누계액은 제외."""
+    rcept = dart.find_report_rcept(key, corp_code, year)
+    if not rcept:
+        return None
+    toc = dart.get_report_toc(key, rcept)
+    fin = next((g for g in toc if "재무에 관한" in g["top"]), None)
+    if not fin:
+        return None
+    top, subs, consol = fin["top"], fin["subs"], (fs == "CFS")
+    note = _find_note(subs, "유형자산", consol)
+    if not note:
+        return None
+    # 당기 롤포워드 표가 먼저 나오므로 첫 '감가상각비'(누계 제외) 행 = 당기 감가상각비
+    for kind, payload in dart.get_section_blocks(key, rcept, top, note):
+        if kind != "table":
+            continue
+        for row in payload[1:]:
+            lab = row[0] or ""
+            if "감가상각비" in lab and "누계" not in lab:
+                v = _first_num(row[1:])
+                if v is not None:
+                    return v * 1_000_000      # 백만원 → 원
+    return None
+
+
 def _make_row(label, kind, values, years_sorted):
     """연도별 값 + 전년比(금액=증감률, 그외=차이) 계산."""
     changes = {}
@@ -253,5 +282,15 @@ def compute_metrics(key, corp_code, years, reprt, fs, deep=False):
         # 전체 원가
         out_rows.append(_make_row("전체 감가상각비·무형상각(성격별)", "amount", tot, years_sorted))
         out_rows.append(_make_row("전체 원가 중 D&A 비중", "pct", _ratio(tot, total_cost), years_sorted))
+
+        # 재구성 CAPEX = 유형자산 감가상각비(주석) + 유형자산 변동(당기−전기)
+        out_rows.append({"label": "", "kind": "sep", "values": {}, "changes": {}})
+        ppe_dep = {y: ppe_depreciation(key, corp_code, y, reprt, fs) for y in years_sorted}
+        ppe_chg = {y: base_by_year[y]["ppe_chg"] for y in years_sorted}
+        recap = {y: (ppe_dep[y] + ppe_chg[y]) if (ppe_dep[y] is not None and ppe_chg[y] is not None) else None
+                 for y in years_sorted}
+        out_rows.append(_make_row("유형자산 감가상각비(주석)", "amount", ppe_dep, years_sorted))
+        out_rows.append(_make_row("유형자산 변동(당기−전기)", "amount", ppe_chg, years_sorted))
+        out_rows.append(_make_row("재구성 CAPEX(감가상각비+유형자산변동)", "amount", recap, years_sorted))
 
     return {"years": years_sorted, "rows": out_rows}
