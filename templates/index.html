@@ -227,6 +227,11 @@
 
   <!-- 다운로드 -->
   <div class="card" style="text-align:center">
+    <div style="margin-bottom:10px; font-size:13px">
+      <label class="muted">기존 엑셀에 이어붙이기 <span style="opacity:.7">(선택 · 업로드하면 그 파일 뒤에 새 시트로 추가)</span></label><br>
+      <input type="file" id="baseFile" accept=".xlsx" style="margin-top:6px; width:auto">
+      <button id="baseClear" style="display:none; padding:4px 10px; font-size:12px">✕ 해제</button>
+    </div>
     <button class="go" id="download" disabled>📥 엑셀로 다운로드</button>
     <div class="spin muted" id="dlSpin" style="margin-top:8px">엑셀 생성 중…</div>
   </div>
@@ -585,6 +590,14 @@ $("#accountAll").onclick = () => { filteredAccounts().forEach(a => accSelected.a
 $("#accountNone").onclick = () => { filteredAccounts().forEach(a => accSelected.delete(a.account_nm)); renderAccounts(); };
 
 function selectedAccounts(){ return [...accSelected]; }
+// 기존 엑셀 이어붙이기 파일 선택 UI
+$("#baseFile").addEventListener("change", () => {
+  const f = $("#baseFile").files[0];
+  $("#baseClear").style.display = f ? "inline-block" : "none";
+  $("#download").textContent = f ? "📥 기존 파일에 추가하여 다운로드" : "📥 엑셀로 다운로드";
+});
+$("#baseClear").onclick = () => { $("#baseFile").value = ""; $("#baseFile").dispatchEvent(new Event("change")); };
+
 const metricsOn = () => $("#metricsChk").checked;
 const metricsDaOn = () => $("#metricsDaChk").checked;
 $("#metricsChk").addEventListener("change", updateDownload);
@@ -612,7 +625,16 @@ $("#download").onclick = async () => {
       major: [...majorSel], sections: [...sectionSel.values()],
       metrics: metricsOn(), metrics_da: metricsDaOn()
     };
-    const r = await fetch("/api/export", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    const baseFile = $("#baseFile").files[0];
+    let r;
+    if(baseFile){
+      const fd = new FormData();
+      fd.append("payload", JSON.stringify(body));
+      fd.append("base", baseFile);
+      r = await fetch("/api/export", {method:"POST", body: fd});
+    } else {
+      r = await fetch("/api/export", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    }
     if(!r.ok){ const j = await r.json().catch(()=>({error:"다운로드 실패"})); return showErr(j.error); }
     const blob = await r.blob();
     const cd = r.headers.get("Content-Disposition")||"";

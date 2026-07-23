@@ -7,6 +7,7 @@
 import io
 import os
 import re
+import json
 import time
 from collections import OrderedDict
 from datetime import datetime
@@ -16,7 +17,7 @@ from flask import Flask, request, jsonify, send_file, render_template
 import naver
 import dart
 import metrics
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
@@ -539,7 +540,13 @@ def _build_metrics_sheet(ws, key, companies, years, reprt, fs, deep=False):
 
 @app.route("/api/export", methods=["POST"])
 def api_export():
-    data = request.get_json(force=True)
+    # 멀티파트면 기존 엑셀(base)에 이어붙이기, JSON이면 새 파일
+    base_file = None
+    if request.content_type and "multipart/form-data" in request.content_type:
+        data = json.loads(request.form.get("payload", "{}"))
+        base_file = request.files.get("base")
+    else:
+        data = request.get_json(force=True)
     key = resolve_key(data.get("key"))
     # 다중 연도(최대 5). 과거 호환: year 단일값도 허용.
     years = data.get("years") or ([data.get("year")] if data.get("year") else [])
@@ -573,20 +580,27 @@ def api_export():
         return jsonify({"ok": False, "error": "분석지표·계정과목·사업보고서 내용 중 하나 이상 선택하세요."}), 400
 
     try:
-        wb = Workbook()
-        first_used = False
+        if base_file is not None:
+            try:
+                wb = load_workbook(base_file)
+            except Exception:
+                return jsonify({"ok": False, "error": "업로드한 파일을 열 수 없습니다. .xlsx 파일인지 확인하세요."}), 400
+            first_used = True    # 기존 시트는 그대로 두고 새 시트를 추가
+        else:
+            wb = Workbook()
+            first_used = False
 
         # ---- 0) 분석지표 시트 (반도체 세트) -----------------------------
         if metrics_on or metrics_da:
-            ws = wb.active
-            ws.title = "분석지표"
+            ws = wb.active if not first_used else wb.create_sheet()
+            ws.title = _safe_sheet_title(wb, "분석지표")
             first_used = True
             _build_metrics_sheet(ws, key, companies, years, reprt, fs, deep=metrics_da)
 
         # ---- 1) 계정과목 시트 (선택 시) --------------------------------
         if accounts:
             ws = wb.active if not first_used else wb.create_sheet()
-            ws.title = "재무분석"
+            ws.title = _safe_sheet_title(wb, "재무분석")
             first_used = True
             _build_accounts_sheet(ws, key, companies, years, reprt, fs, accounts, industry)
 
