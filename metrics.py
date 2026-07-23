@@ -60,8 +60,13 @@ def _base_values(rows):
                 ("영업활동 현금흐름", "영업활동현금흐름", "영업활동으로"))
     capex = _find(rows, {"ifrs-full_PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"},
                   "CF", ("유형자산의 취득", "유형자산 취득", "유형자산의취득"))
+    capex_int = _find(rows, {"ifrs-full_PurchaseOfIntangibleAssetsClassifiedAsInvestingActivities"},
+                      "CF", ("무형자산의 취득", "무형자산 취득", "무형자산의취득"))
+    # 총 CAPEX = 유형 + 무형(있으면). 유형이 없으면 총도 None.
+    capex_total = None if capex is None else capex + (capex_int or 0)
     return {"rev": rev, "cogs": cogs, "gp": gp, "sga": sga, "op": op, "ni": ni,
-            "ppe": ppe, "inv": inv, "ocf": ocf, "capex": capex}
+            "ppe": ppe, "inv": inv, "ocf": ocf,
+            "capex": capex, "capex_int": capex_int, "capex_total": capex_total}
 
 
 def _div(a, b):
@@ -82,15 +87,17 @@ METRIC_DEFS = [
     ("유형자산", "amount", lambda b: b["ppe"]),
     ("재고자산", "amount", lambda b: b["inv"]),
     ("영업활동현금흐름", "amount", lambda b: b["ocf"]),
-    ("CAPEX(유형자산 취득)", "amount", lambda b: b["capex"]),
-    ("단순 FCF(영업CF−CAPEX)", "amount",
-     lambda b: (b["ocf"] - b["capex"]) if (b["ocf"] is not None and b["capex"] is not None) else None),
+    ("유형자산 취득(CAPEX)", "amount", lambda b: b["capex"]),
+    ("무형자산 취득", "amount", lambda b: b["capex_int"]),
+    ("총 CAPEX(유형+무형)", "amount", lambda b: b["capex_total"]),
+    ("단순 FCF(영업CF−총CAPEX)", "amount",
+     lambda b: (b["ocf"] - b["capex_total"]) if (b["ocf"] is not None and b["capex_total"] is not None) else None),
     ("__sep__", "sep", None),
     ("매출원가율", "pct", lambda b: _div(b["cogs"], b["rev"])),
     ("매출총이익률", "pct", lambda b: _div(b["gp"], b["rev"])),
     ("영업이익률", "pct", lambda b: _div(b["op"], b["rev"])),
     ("순이익률", "pct", lambda b: _div(b["ni"], b["rev"])),
-    ("CAPEX / 매출액", "pct", lambda b: _div(b["capex"], b["rev"])),
+    ("총 CAPEX / 매출액", "pct", lambda b: _div(b["capex_total"], b["rev"])),
     ("매출액 / 유형자산(회전)", "ratio", lambda b: _div(b["rev"], b["ppe"])),
     ("재고자산회전율(매출원가÷재고)", "ratio", lambda b: _div(b["cogs"], b["inv"])),
     ("재고자산회전기간(일)", "days",
