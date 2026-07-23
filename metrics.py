@@ -198,6 +198,77 @@ def da_breakdown(key, corp_code, year, reprt, fs):
     return tot, sg
 
 
+def _pick_table(key, rcept, top, sub, keys):
+    """sub의 표들 중, 라벨에 keys 중 하나라도 포함하는 (당기) 첫 표."""
+    for k, p in dart.get_section_blocks(key, rcept, top, sub):
+        if k == "table" and len(p) >= 2:
+            labs = " ".join((r[0] or "") for r in p)
+            if any(kw in labs for kw in keys):
+                return p
+    return None
+
+
+def _rowsum(table, include, exclude=()):
+    """표에서 label이 include 중 하나 포함(exclude 제외) 행들의 당기값 합계(백만원)."""
+    if not table:
+        return None
+    tot, found = 0.0, False
+    for row in table[1:]:
+        lab = row[0] or ""
+        if any(k in lab for k in include) and not any(x in lab for x in exclude):
+            v = _first_num(row[1:])
+            if v is not None:
+                tot += v
+                found = True
+    return tot if found else None
+
+
+def cost_breakdown(key, corp_code, year, reprt, fs):
+    """성격별 비용·판관비 주석에서 원가 성격별 금액 추출(원).
+    반환 dict: total(성격별 합계) material(재료) labor(노무=종업원급여) da_total(감가+무형)
+              labor_sga(판관비 인건비) da_sga(판관비 D&A). 못 찾으면 None."""
+    rcept = dart.find_report_rcept(key, corp_code, year)
+    if not rcept:
+        return None
+    toc = dart.get_report_toc(key, rcept)
+    fin = next((g for g in toc if "재무에 관한" in g["top"]), None)
+    if not fin:
+        return None
+    top, subs, consol = fin["top"], fin["subs"], (fs == "CFS")
+
+    n_nat = _find_note(subs, "비용의 성격별 분류", consol) or _find_note(subs, "성격별 비용", consol)
+    n_sga = _find_note(subs, "판매비와관리비", consol)
+    nat_t = _pick_table(key, rcept, top, n_nat, ("원재료", "종업원급여", "감가상각비 등")) if n_nat else None
+    sga_t = _pick_table(key, rcept, top, n_sga, ("무형자산상각비", "감가상각비")) if n_sga else None
+
+    # 폴백: 구형 보고서(개별 주석 TITLE 없음) — 주석 섹션 전체 표 스캔
+    if nat_t is None or sga_t is None:
+        notes_sub = _find_note(subs, "재무제표 주석", consol)
+        if notes_sub:
+            for t in [p for k, p in dart.get_section_blocks(key, rcept, top, notes_sub)
+                      if k == "table" and len(p) >= 2]:
+                j = " ".join((r[0] or "") for r in t)
+                if nat_t is None and (("원재료" in j and "종업원급여" in j) or "감가상각비 등" in j):
+                    nat_t = t
+                if sga_t is None and ("무형자산상각비" in j) and ("급여" in j):
+                    sga_t = t
+
+    if nat_t is None:
+        return None
+
+    def M(v):
+        return v * 1_000_000 if v is not None else None
+
+    return {
+        "total": M(_rowsum(nat_t, ("합계",), exclude=("소계",))),
+        "material": M(_rowsum(nat_t, ("원재료",))),
+        "labor": M(_rowsum(nat_t, ("종업원급여", "종업원 급여"))),
+        "da_total": M(_rowsum(nat_t, ("감가상각", "무형자산상각"))),
+        "labor_sga": M(_rowsum(sga_t, ("급여", "복리후생"))) if sga_t else None,
+        "da_sga": M(_rowsum(sga_t, ("감가상각", "무형자산상각"))) if sga_t else None,
+    }
+
+
 def ppe_depreciation(key, corp_code, year, reprt, fs):
     """유형자산 주석(롤포워드)의 당기 감가상각비(원). 무형상각·감가상각누계액은 제외."""
     rcept = dart.find_report_rcept(key, corp_code, year)
@@ -255,42 +326,79 @@ def compute_metrics(key, corp_code, years, reprt, fs, deep=False):
         out_rows.append(_make_row(label, kind, values, years_sorted))
 
     if deep:
-        out_rows.append({"label": "", "kind": "sep", "values": {}, "changes": {}})
-        tot = {}      # 전체 D&A(원)
-        sga = {}      # 판관비 D&A(원)
-        for y in years_sorted:
-            tot[y], sga[y] = da_breakdown(key, corp_code, y, reprt, fs)
-        cogs_da = {y: (tot[y] - sga[y]) if (tot[y] is not None and sga[y] is not None) else None
-                   for y in years_sorted}
+        ys = years_sorted
+        cb = {y: (cost_breakdown(key, corp_code, y, reprt, fs) or {}) for y in ys}
+
+        def F(f):
+            return {y: cb[y].get(f) for y in ys}
+
+        def SEP():
+            out_rows.append({"label": "", "kind": "sep", "values": {}, "changes": {}})
 
         def _ratio(num, den):
-            return {y: (num[y] / den[y]) if (num[y] is not None and den[y]) else None
-                    for y in years_sorted}
+            return {y: (num[y] / den[y]) if (num[y] is not None and den.get(y)) else None for y in ys}
 
-        cogs_base = {y: base_by_year[y]["cogs"] for y in years_sorted}
-        sga_base = {y: base_by_year[y]["sga"] for y in years_sorted}
-        total_cost = {y: (cogs_base[y] + sga_base[y])
-                      if (cogs_base[y] is not None and sga_base[y] is not None) else None
-                      for y in years_sorted}
+        def _sub(a, b):
+            return {y: (a[y] - b[y]) if (a[y] is not None and b[y] is not None) else None for y in ys}
 
-        # 매출원가
-        out_rows.append(_make_row("매출원가 감가상각비·무형상각(추정)", "amount", cogs_da, years_sorted))
-        out_rows.append(_make_row("매출원가 중 D&A 비중", "pct", _ratio(cogs_da, cogs_base), years_sorted))
-        # 판관비
-        out_rows.append(_make_row("판관비 감가상각비·무형상각", "amount", sga, years_sorted))
-        out_rows.append(_make_row("판관비 중 D&A 비중", "pct", _ratio(sga, sga_base), years_sorted))
-        # 전체 원가
-        out_rows.append(_make_row("전체 감가상각비·무형상각(성격별)", "amount", tot, years_sorted))
-        out_rows.append(_make_row("전체 원가 중 D&A 비중", "pct", _ratio(tot, total_cost), years_sorted))
+        total = F("total")          # 성격별 합계(전체 원가)
+        material = F("material")     # 재료원가
+        labor = F("labor")          # 노무원가(종업원급여)
+        da_tot = F("da_total")      # 전체 D&A
+        labor_sga = F("labor_sga")  # 판관비 인건비
+        da_sga = F("da_sga")        # 판관비 D&A
+        cogs_b = {y: base_by_year[y]["cogs"] for y in ys}
+        sga_b = {y: base_by_year[y]["sga"] for y in ys}
+        # 전체 원가 denominator: 성격별 합계 우선, 없으면 매출원가+판관비
+        total_c = {y: total[y] if total[y] is not None else
+                   ((cogs_b[y] + sga_b[y]) if (cogs_b[y] is not None and sga_b[y] is not None) else None)
+                   for y in ys}
 
-        # 재구성 CAPEX = 유형자산 감가상각비(주석) + 유형자산 변동(당기−전기)
-        out_rows.append({"label": "", "kind": "sep", "values": {}, "changes": {}})
-        ppe_dep = {y: ppe_depreciation(key, corp_code, y, reprt, fs) for y in years_sorted}
-        ppe_chg = {y: base_by_year[y]["ppe_chg"] for y in years_sorted}
+        cogs_da = _sub(da_tot, da_sga)
+        mfg_all = {y: (total_c[y] - material[y] - labor[y])
+                   if (total_c[y] is not None and material[y] is not None and labor[y] is not None) else None
+                   for y in ys}
+        cogs_labor = _sub(labor, labor_sga)     # 매출원가 노무 = 전체 노무 − 판관비 노무
+        cogs_mfg = {y: (cogs_b[y] - material[y] - cogs_labor[y])
+                    if (cogs_b[y] is not None and material[y] is not None and cogs_labor[y] is not None) else None
+                    for y in ys}
+
+        # ── 감가상각비·무형상각 D&A 비중
+        SEP()
+        out_rows.append(_make_row("전체 감가상각비·무형상각(성격별)", "amount", da_tot, ys))
+        out_rows.append(_make_row("전체 원가 중 D&A 비중", "pct", _ratio(da_tot, total_c), ys))
+        out_rows.append(_make_row("매출원가 감가상각비·무형상각(추정)", "amount", cogs_da, ys))
+        out_rows.append(_make_row("매출원가 중 D&A 비중", "pct", _ratio(cogs_da, cogs_b), ys))
+        out_rows.append(_make_row("판관비 감가상각비·무형상각", "amount", da_sga, ys))
+        out_rows.append(_make_row("판관비 중 D&A 비중", "pct", _ratio(da_sga, sga_b), ys))
+
+        # ── 전체 원가 성격별 구성 (재료·노무·제조간접)
+        SEP()
+        out_rows.append(_make_row("전체 원가(성격별 합계)", "amount", total_c, ys))
+        out_rows.append(_make_row("재료원가", "amount", material, ys))
+        out_rows.append(_make_row("전체 원가 중 재료비중", "pct", _ratio(material, total_c), ys))
+        out_rows.append(_make_row("노무원가(종업원급여)", "amount", labor, ys))
+        out_rows.append(_make_row("전체 원가 중 노무비중", "pct", _ratio(labor, total_c), ys))
+        out_rows.append(_make_row("제조간접·기타", "amount", mfg_all, ys))
+        out_rows.append(_make_row("전체 원가 중 제조간접비중", "pct", _ratio(mfg_all, total_c), ys))
+
+        # ── 매출원가 성격별 구성
+        SEP()
+        out_rows.append(_make_row("매출원가 재료원가", "amount", material, ys))
+        out_rows.append(_make_row("매출원가 중 재료비중", "pct", _ratio(material, cogs_b), ys))
+        out_rows.append(_make_row("매출원가 노무원가", "amount", cogs_labor, ys))
+        out_rows.append(_make_row("매출원가 중 노무비중", "pct", _ratio(cogs_labor, cogs_b), ys))
+        out_rows.append(_make_row("매출원가 제조간접·기타", "amount", cogs_mfg, ys))
+        out_rows.append(_make_row("매출원가 중 제조간접비중", "pct", _ratio(cogs_mfg, cogs_b), ys))
+
+        # ── 재구성 CAPEX = 유형자산 감가상각비(주석) + 유형자산 변동
+        SEP()
+        ppe_dep = {y: ppe_depreciation(key, corp_code, y, reprt, fs) for y in ys}
+        ppe_chg = {y: base_by_year[y]["ppe_chg"] for y in ys}
         recap = {y: (ppe_dep[y] + ppe_chg[y]) if (ppe_dep[y] is not None and ppe_chg[y] is not None) else None
-                 for y in years_sorted}
-        out_rows.append(_make_row("유형자산 감가상각비(주석)", "amount", ppe_dep, years_sorted))
-        out_rows.append(_make_row("유형자산 변동(당기−전기)", "amount", ppe_chg, years_sorted))
-        out_rows.append(_make_row("재구성 CAPEX(감가상각비+유형자산변동)", "amount", recap, years_sorted))
+                 for y in ys}
+        out_rows.append(_make_row("유형자산 감가상각비(주석)", "amount", ppe_dep, ys))
+        out_rows.append(_make_row("유형자산 변동(당기−전기)", "amount", ppe_chg, ys))
+        out_rows.append(_make_row("재구성 CAPEX(감가상각비+유형자산변동)", "amount", recap, ys))
 
     return {"years": years_sorted, "rows": out_rows}
